@@ -363,3 +363,17 @@ async def test_finished_turn_timings_are_kept_for_the_bench(kit):
     assert turn["message_id"] == event.message_id and turn["room"] == "kitchen" and turn["kind"] == "wake"
     assert turn["stages"]["endpoint"] == 0.0 and "dispatch" in turn["stages"] and "reply_text" in turn["stages"]
     assert turn["endpoint_at"] > 0
+
+
+async def test_prewarm_loads_the_tts_voice_without_playing_it(kit):
+    await kit.adapter._prewarm()
+    await kit.settle()
+    assert kit.tts.texts == ["Ready."]
+    assert not (kit.tts.tmp / "tts1.wav").exists()  # the warm-up file is thrown away
+    assert kit.hub.controls("dev-kitchen", "play.begin") == [] and kit.hub.controls("dev-office", "play.begin") == []
+
+
+async def test_prewarm_warms_tts_even_before_any_pairing(tmp_path):
+    k = Kit(tmp_path).wire()
+    await k.adapter._prewarm()
+    assert k.events == [] and k.tts.texts == ["Ready."]

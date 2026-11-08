@@ -326,9 +326,28 @@ class HousemateAdapter(BasePlatformAdapter):
             await self._prewarm()
 
     async def _prewarm(self) -> None:
-        """Load Hermes's speech-to-text model before the first question: a cold load adds seconds
-        to the first answer after a restart. A short, quiet clip goes to the answer side chat under
-        a one-time marker; whatever it transcribes to is ignored and the side turn is vetoed."""
+        """Warm Hermes's speech models before the first question; a cold load adds seconds to the
+        first answer after a restart. Never a turn in the household conversation."""
+        await self._prewarm_stt()  # hands a clip to Hermes and returns; the model loads meanwhile
+        await self._prewarm_tts()
+
+    async def _prewarm_tts(self) -> None:
+        """One short synthesis through the text_to_speech tool, the path replies take: a local voice
+        (Piper loads in ~5 s) is in memory afterwards. The file is thrown away, nothing is played."""
+        started = time.monotonic()
+        try:
+            paths = await self._tts("Ready.")
+        except Exception:
+            log.debug("housemate: text-to-speech warm-up failed", exc_info=True)
+            return
+        for path in paths:
+            with contextlib.suppress(OSError):
+                Path(path).unlink()
+        log.info("housemate: text-to-speech warmed up in %.1f s", time.monotonic() - started)
+
+    async def _prewarm_stt(self) -> None:
+        """A short, quiet clip goes to the answer side chat under a one-time marker; whatever it
+        transcribes to is ignored and the side turn is vetoed."""
         try:
             device_id = next((d.device_id for d in self.store.list_devices() if d.paired), None)
         except Exception:
