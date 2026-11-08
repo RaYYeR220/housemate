@@ -307,3 +307,14 @@ async def test_prewarm_skipped_without_paired_devices(tmp_path):
     k = Kit(tmp_path).wire()
     await k.adapter._prewarm()
     assert k.events == []
+
+
+async def test_gateway_housekeeping_is_shown_not_spoken(kit):
+    event = await speak(kit, "dev-office")
+    await kit.adapter.send("household", "Paris.", reply_to=event.message_id)
+    await kit.settle()
+    spoken = list(kit.tts.texts)
+    await kit.adapter.send("household", "\U0001F4BE Self-improvement review: Skill 'x' created")
+    await kit.settle()
+    assert kit.hub.controls("dev-office", "caption")[-1]["role"] == "status"
+    assert kit.tts.texts == spoken  # nothing new was spoken

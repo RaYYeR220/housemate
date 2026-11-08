@@ -64,6 +64,8 @@ SIDE_CHAT = answers.SIDE_CHAT
 # Gateway notices that make no sense out loud on a kitchen speaker.
 _SWALLOWED_PREFIXES = ("\U0001F4EC", "♻")  # "📬 No home channel is set…", "♻️ Gateway restarted…"
 _TRANSCRIPT_PREFIX = "\U0001F399"  # "🎙️ "<transcript>"": the STT echo
+# Housekeeping notices: caption only. 💾 self-improvement, ⚡ interrupt, 💡 tip, ⏳/⌛ waits, 🔄 retry.
+_STATUS_PREFIXES = ("\U0001F4BE", "⚡", "\U0001F4A1", "⏳", "⌛", "\U0001F504")
 _QUOTES = "\"'“”‘’ ️"
 
 CAPTION_TTL_S = 15 * 60
@@ -686,6 +688,14 @@ class HousemateAdapter(BasePlatformAdapter):
         if chat_id == SIDE_CHAT or not text:
             return  # the spoken-answer side chat never talks back
         if text.startswith(_SWALLOWED_PREFIXES):
+            return
+        if text.startswith(_STATUS_PREFIXES):
+            # Gateway housekeeping ("💾 Self-improvement review: …", "⚡ Interrupting …"): show it on
+            # the screen of the room that last spoke, never say it out loud, never end a turn on it.
+            turn = self.router.active_turn(chat_id) or self.router.latest_turn(chat_id)
+            room = turn.room if turn is not None else self._chat_room(chat_id)
+            if room:
+                await self._caption_room(room, "status", _plain(text))
             return
         if text.startswith(_TRANSCRIPT_PREFIX):
             said = text[len(_TRANSCRIPT_PREFIX):].strip(_QUOTES)
