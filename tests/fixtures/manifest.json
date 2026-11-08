@@ -1,0 +1,122 @@
+[
+ {
+  "file": "wake_jarvis_roger.wav",
+  "label": "wake",
+  "text": "Hey Jarvis.",
+  "engine": "elevenlabs",
+  "voice": "roger",
+  "seconds": 0.99
+ },
+ {
+  "file": "wake_jarvis_sarah.wav",
+  "label": "wake",
+  "text": "Hey Jarvis.",
+  "engine": "elevenlabs",
+  "voice": "sarah",
+  "seconds": 0.85
+ },
+ {
+  "file": "wake_jarvis_george.wav",
+  "label": "wake",
+  "text": "Hey Jarvis.",
+  "engine": "elevenlabs",
+  "voice": "george",
+  "seconds": 0.95
+ },
+ {
+  "file": "wake_jarvis_jessica.wav",
+  "label": "wake",
+  "text": "Hey Jarvis.",
+  "engine": "elevenlabs",
+  "voice": "jessica",
+  "seconds": 0.93
+ },
+ {
+  "file": "wake_jarvis_engbsonia.wav",
+  "label": "wake",
+  "text": "Hey Jarvis.",
+  "engine": "edge-tts",
+  "voice": "en-GB-SoniaNeural",
+  "seconds": 1.22
+ },
+ {
+  "file": "wake_jarvis_eninneerja.wav",
+  "label": "wake",
+  "text": "Hey Jarvis.",
+  "engine": "edge-tts",
+  "voice": "en-IN-NeerjaNeural",
+  "seconds": 1.14
+ },
+ {
+  "file": "wake_jarvis_enusguy.wav",
+  "label": "wake",
+  "text": "Hey Jarvis.",
+  "engine": "edge-tts",
+  "voice": "en-US-GuyNeural",
+  "seconds": 1.06
+ },
+ {
+  "file": "wake_jarvis_enieconnor.wav",
+  "label": "wake",
+  "text": "Hey Jarvis.",
+  "engine": "edge-tts",
+  "voice": "en-IE-ConnorNeural",
+  "seconds": 1.04
+ },
+ {
+  "file": "wake_jarvis_ennzmolly.wav",
+  "label": "wake",
+  "text": "Hey Jarvis.",
+  "engine": "edge-tts",
+  "voice": "en-NZ-MollyNeural",
+  "seconds": 1.24
+ },
+ {
+  "file": "wake_jarvis-math_enusaria.wav",
+  "label": "wake",
+  "text": "Hey Jarvis, what's two plus two?",
+  "engine": "edge-tts",
+  "voice": "en-US-AriaNeural",
+  "seconds": 2.36
+ },
+ {
+  "file": "neg_hey-there_enusguy.wav",
+  "label": "neg",
+  "text": "Hey there.",
+  "engine": "edge-tts",
+  "voice": "en-US-GuyNeural",
+  "seconds": 0.88
+ },
+ {
+  "file": "neg_jars-of-jam_enusandrew.wav",
+  "label": "neg",
+  "text": "Jars of jam.",
+  "engine": "edge-tts",
+  "voice": "en-US-AndrewNeural",
+  "seconds": 1.01
+ },
+ {
+  "file": "neg_hey-davis_encaliam.wav",
+  "label": "neg",
+  "text": "Hey, Davis!",
+  "engine": "edge-tts",
+  "voice": "en-CA-LiamNeural",
+  "seconds": 1.34
+ },
+ {
+  "file": "neg_hey-marvin_enussteffan.wav",
+  "label": "neg",
+  "text": "Hey, Marvin, are you coming?",
+  "engine": "edge-tts",
+  "voice": "en-US-SteffanNeural",
+  "seconds": 1.66
+ },
+ {
+  "file": "neg_harvest_engbthomas.wav",
+  "label": "neg",
+  "text": "The harvest was early this year.",
+  "engine": "edge-tts",
+  "voice": "en-GB-ThomasNeural",
+  "seconds": 1.9
+ }
+]
