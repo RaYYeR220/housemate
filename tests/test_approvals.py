@@ -460,3 +460,35 @@ async def test_resolver_error_in_the_hook_still_clears_the_card(kit):
     out = await answer_by_voice(kit, "Approve.")
     assert out["action"] == "block"
     assert kit.hub.controls("dev-kitchen", "prompt.clear")[-1]["id"] == "req-1"
+
+
+# --- the household queue waits for the prompt (review M2) ----------------------------------------
+
+
+async def test_open_approval_holds_the_household_turn_past_its_timeout(kit):
+    await ask_approval(kit)
+    kit.adapter._on_utterance("dev-office", utterance(), "wake")  # queued behind the kitchen turn
+    await kit.settle()
+    base = kit.adapter.router._clock
+    kit.adapter.router._clock = lambda: base() + 10_000
+    kit.adapter._watch_step()
+    await kit.settle()
+    assert [e.source.chat_id for e in kit.events].count("household") == 1  # the office waits
+    assert kit.adapter.router.active_turn("household").device_id == "dev-kitchen"
+    assert "req-1" in kit.adapter._prompts
+
+
+def test_default_turn_timeout_outlasts_hermes_approval_timeout(monkeypatch):
+    from gateway.config import PlatformConfig
+
+    from housemate import adapter as adapter_mod
+
+    monkeypatch.setattr(adapter_mod, "_hermes_approval_timeout", lambda: 600.0)
+    adapter = adapter_mod.HousemateAdapter(PlatformConfig(enabled=True, extra={}))
+    assert adapter.router.turn_timeout_s > 600
+    monkeypatch.setattr(adapter_mod, "_hermes_approval_timeout", lambda: 300.0)
+    adapter = adapter_mod.HousemateAdapter(PlatformConfig(enabled=True, extra={}))
+    assert adapter.router.turn_timeout_s > 300
+    # an explicit setting is kept (the open-prompt hold still protects approvals)
+    adapter = adapter_mod.HousemateAdapter(PlatformConfig(enabled=True, extra={"turn_timeout_s": 120}))
+    assert adapter.router.turn_timeout_s == 120

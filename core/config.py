@@ -75,7 +75,9 @@ class HousemateConfig:
     vad: Literal["silero", "energy"] = "silero"
     followup_s: float = 6.0
     answer_window_s: float = 10.0  # no-wake window for "approve" / "deny" / a clarify choice
-    turn_timeout_s: float = 180.0  # safety net: a household turn never blocks the queue longer
+    # Safety net: a household turn never blocks the queue longer. Above Hermes's default 5-minute
+    # approval timeout (the adapter raises it to the configured one); a turn waiting on a prompt is held.
+    turn_timeout_s: float = 360.0
     end_silence_ms: int = 700  # this much silence ends an utterance
     prewarm: bool = True  # load Hermes's speech-to-text model at start-up, not on the first question
     rooms: tuple[str, ...] = ("Kitchen", "Office")

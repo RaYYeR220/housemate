@@ -74,7 +74,9 @@ _QUOTES = "\"'“”‘’ ️"
 
 CAPTION_TTL_S = 15 * 60
 CAPTION_KEEP = 5
-SESSION_IDLE_WAIT_S = 20.0
+SESSION_IDLE_WAIT_S = 20.0  # a spoken answer waits this long for the side chat to go idle
+SESSION_BUSY_MAX_WAIT_S = 300.0  # a queued question waits this long for Hermes, then is given up
+TURN_TIMEOUT_MARGIN_S = 60.0  # the turn safety net sits this far past Hermes's approval timeout
 APPROVAL_ANSWER_TTL_S = 310.0  # a little past Hermes's default 5-minute approval timeout
 STOP_ANSWER_TTL_S = 200.0
 PLAYBACK_GRACE_S = 3.0
@@ -212,7 +214,11 @@ class HousemateAdapter(BasePlatformAdapter):
         if not isinstance(getattr(config, "extra", None), dict):
             config.extra = {}
         self.cfg = HousemateConfig.from_extra(getattr(config, "extra", None))
-        self.router = SessionRouter(self.cfg.conversation, turn_timeout_s=self.cfg.turn_timeout_s)
+        turn_timeout = self.cfg.turn_timeout_s
+        if "turn_timeout_s" not in config.extra:
+            turn_timeout = max(turn_timeout, _hermes_approval_timeout() + TURN_TIMEOUT_MARGIN_S)
+        self.router = SessionRouter(self.cfg.conversation, turn_timeout_s=turn_timeout)
+        self._dispatching: set[str] = set()  # chats whose next question waits for Hermes to go idle
         self.arbiter = WakeArbiter()
         # What the Desktop Rooms page shows; every change pokes the feed (plugin event to Desktop).
         self.desk = DeskLog(on_change=self._desk_poke)
@@ -608,7 +614,18 @@ class HousemateAdapter(BasePlatformAdapter):
                 channel_prompt=self._room_prompt(room_name, device_name),
                 channel_context=f"[room: {room_name}]",
             )
-            await self._wait_session_idle(event)
+            self._dispatching.add(chat_id)
+            try:
+                idle = await self._wait_session_idle(event, SESSION_BUSY_MAX_WAIT_S)
+            finally:
+                self._dispatching.discard(chat_id)
+            if not idle:
+                # Handing it over now would interrupt Hermes's running turn (and cancel its approval).
+                log.warning("housemate: Hermes is still busy; gave up the question from %s", item.room)
+                self._set_state(item.device_id, "idle")
+                await self._caption_room(item.room, "status", "Sorry, I couldn't get to that. Please ask again.")
+                self._end_turn(chat_id, item.message_id)
+                return
             self._mark(item.message_id, "dispatch")
             await self.handle_message(event)
         except asyncio.CancelledError:
@@ -626,21 +643,25 @@ class HousemateAdapter(BasePlatformAdapter):
             return where + ". This is one household conversation across rooms; your reply is spoken in that room."
         return where + "."
 
-    async def _wait_session_idle(self, event: MessageEvent) -> None:
+    async def _wait_session_idle(self, event: MessageEvent, timeout: float = SESSION_IDLE_WAIT_S) -> bool:
         """A queued utterance waits until Hermes has really finished the previous turn: handing
-        it over while that session is still busy would interrupt the running turn."""
+        it over while that session is still busy would interrupt the running turn. False when the
+        session is still busy after ``timeout``."""
         try:
             key = self._event_session_key(event)
         except Exception:
-            return
+            return True
         active = getattr(self, "_active_sessions", None)
         if not isinstance(active, dict) or key not in active:
-            return
+            return True
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + SESSION_IDLE_WAIT_S
+        deadline = loop.time() + timeout
         while key in active and loop.time() < deadline:
             await asyncio.sleep(0.05)
+        if key in active:
+            return False
         await asyncio.sleep(0.1)
+        return True
 
     def _end_turn(self, chat_id: str, message_id: str | None = None) -> None:
         turn = self.router.active_turn(chat_id)
@@ -684,17 +705,25 @@ class HousemateAdapter(BasePlatformAdapter):
         while True:
             await asyncio.sleep(5.0)
             try:
-                for chat_id, item in self.router.expire():
-                    log.warning("housemate: a turn in %s timed out; answering the next question", chat_id)
-                    self.router.begin_turn(chat_id, item.room, item.message_id, item.device_id)
-                    self._spawn(self._dispatch(chat_id, item))
-                self._settle_dropped()
-                cutoff = time.time() - 900
-                for mid in [m for m, t in self._timings.items() if t.get("captured", 0) < cutoff]:
-                    self._timings.pop(mid, None)
-                    self._timing_meta.pop(mid, None)
+                self._watch_step()
             except Exception:
                 log.exception("housemate: watchdog step failed")
+
+    def _watch_step(self) -> None:
+        for chat_id, item in self.router.expire(hold=self._turn_held):
+            log.warning("housemate: a turn in %s timed out; answering the next question", chat_id)
+            self.router.begin_turn(chat_id, item.room, item.message_id, item.device_id)
+            self._spawn(self._dispatch(chat_id, item))
+        self._settle_dropped()
+        cutoff = time.time() - 900
+        for mid in [m for m, t in self._timings.items() if t.get("captured", 0) < cutoff]:
+            self._timings.pop(mid, None)
+            self._timing_meta.pop(mid, None)
+
+    def _turn_held(self, chat_id: str) -> bool:
+        """The chat's turn waits on the user (an open approval or clarify prompt) or its question
+        waits for Hermes to go idle: the safety timeout must not hand the next question over."""
+        return chat_id in self._dispatching or any(p.chat_id == chat_id for p in self._prompts.values())
 
     # ======================================================================== device control
 
@@ -1802,6 +1831,17 @@ class HousemateAdapter(BasePlatformAdapter):
     def recent_timings(self) -> list[dict]:
         """Stage times of the last finished turns, oldest first (``hermes housemate bench``)."""
         return list(self._turn_log)
+
+
+def _hermes_approval_timeout() -> float:
+    """Hermes's ``approvals.timeout`` (default 300 s), read through its public config loader."""
+    try:
+        from hermes_cli.config import load_config
+
+        approvals = (load_config() or {}).get("approvals") or {}
+        return max(0.0, float(approvals.get("timeout", 300)))
+    except Exception:
+        return 300.0
 
 
 def _secret(name: str) -> str:

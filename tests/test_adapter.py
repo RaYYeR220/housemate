@@ -89,6 +89,26 @@ async def test_queued_utterance_waits_for_hermes_session_to_go_idle(kit):
     assert len(kit.events) == 2
 
 
+async def test_queued_question_is_never_handed_to_a_busy_session(kit, monkeypatch):
+    """Review M2: when Hermes stays busy, the queued question is given up (and the room told), never
+    handed over mid-turn (that would interrupt the running turn and cancel its approval)."""
+    from housemate import adapter as adapter_mod
+
+    monkeypatch.setattr(adapter_mod, "SESSION_BUSY_MAX_WAIT_S", 0.3)
+    first = await speak(kit, "dev-kitchen")
+    kit.adapter._on_utterance("dev-office", utterance(), "wake")
+    await kit.settle()
+    key = kit.adapter._event_session_key(first)
+    kit.adapter._active_sessions[key] = asyncio.Event()  # Hermes never finishes
+    await kit.adapter.send("household", "Four.", reply_to=first.message_id)
+    await asyncio.sleep(0.5)
+    await kit.settle()
+    assert len(kit.events) == 1
+    assert "ask again" in kit.hub.controls("dev-office", "caption")[-1]["text"]
+    assert kit.hub.controls("dev-office", "state")[-1]["state"] == "idle"
+    assert not kit.adapter.router.household_busy("household")
+
+
 async def test_processing_complete_ends_turn_when_no_reply_text(kit):
     first = await speak(kit, "dev-kitchen")
     kit.adapter._on_utterance("dev-office", utterance(), "wake")

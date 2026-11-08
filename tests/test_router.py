@@ -138,6 +138,27 @@ def test_turn_safety_timeout_releases_queue():
     assert router.active_turn(HOUSEHOLD_CHAT) is None or router.active_turn(HOUSEHOLD_CHAT).message_id != "m1"
 
 
+def test_turn_waiting_on_a_prompt_is_held_past_its_timeout():
+    """Review M2: while the turn waits on an approval it never expires, and once the prompt is settled
+    it gets a fresh timeout (the approved command may still run for a while)."""
+    clock = Clock()
+    router = SessionRouter("household", clock=clock, turn_timeout_s=60)
+    router.begin_turn(HOUSEHOLD_CHAT, "kitchen", "m1")
+    router.enqueue(utterance("office", "m2"), HOUSEHOLD_CHAT)
+    clock.t += 100  # past the timeout, within the queue's ttl
+    assert router.expire(hold=lambda chat_id: chat_id == HOUSEHOLD_CHAT) == []
+    assert router.active_turn(HOUSEHOLD_CHAT).message_id == "m1"
+    clock.t += 59
+    assert router.expire(hold=lambda chat_id: False) == []
+    clock.t += 2
+    released = router.expire(hold=lambda chat_id: False)
+    assert [item.message_id for _, item in released] == ["m2"]
+
+
+def test_config_default_turn_timeout_outlasts_the_approval_timeout():
+    assert HousemateConfig.from_extra({}).turn_timeout_s > 300
+
+
 def test_turn_lookup_by_message_id():
     router = SessionRouter("household")
     router.begin_turn(HOUSEHOLD_CHAT, "kitchen", "m1", device_id="dev-k")

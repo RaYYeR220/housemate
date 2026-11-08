@@ -6,7 +6,8 @@ room its own chat id (the room slug).
 
 A *turn* runs from the moment an utterance is handed to Hermes until its reply has been delivered
 (the adapter calls ``on_turn_end`` on the final ``send()`` whose ``reply_to`` is the utterance's
-message id, on ``on_processing_complete`` for it, or after ``turn_timeout_s`` as a safety net).
+message id, on ``on_processing_complete`` for it, or after ``turn_timeout_s`` as a safety net; a
+turn waiting on an approval or clarify prompt is held, never timed out).
 While a chat has a turn running, new utterances for that chat are queued here instead of being
 handed to Hermes: in a shared household session a second message mid-turn would interrupt the
 running turn (and cancel a pending approval). ``on_turn_end`` hands back the next queued
@@ -62,7 +63,7 @@ class SessionRouter:
         mode: str = "household",
         *,
         clock: Callable[[], float] = time.monotonic,
-        turn_timeout_s: float = 180.0,
+        turn_timeout_s: float = 360.0,
         queue_ttl_s: float = 300.0,
         max_queue: int = 5,
         history: int = 64,
@@ -165,11 +166,18 @@ class SessionRouter:
         turn.ended_at = self._clock()
         return self._release(chat_id)
 
-    def expire(self) -> list[tuple[str, Any]]:
-        """End turns older than ``turn_timeout_s``; returns ``(chat_id, next_item)`` released."""
+    def expire(self, hold: Callable[[str], bool] | None = None) -> list[tuple[str, Any]]:
+        """End turns older than ``turn_timeout_s``; returns ``(chat_id, next_item)`` released.
+
+        ``hold(chat_id)`` true: the chat's turn is waiting on the user (an open approval) and never
+        times out; its clock restarts, so it gets a full timeout once the prompt is settled.
+        """
         now = self._clock()
         released: list[tuple[str, Any]] = []
         for chat_id, turn in list(self._active.items()):
+            if hold is not None and hold(chat_id):
+                turn.started_at = now
+                continue
             if now - turn.started_at >= self.turn_timeout_s:
                 del self._active[chat_id]
                 turn.ended_at = now
