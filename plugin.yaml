@@ -32,3 +32,7 @@ optional_env:
     description: "Comma-separated paired device ids allowed to talk to Hermes (empty = every paired device)"
     prompt: "Allowed device ids"
     password: false
+  - name: HOUSEMATE_ALLOW_ALL_DEVICES
+    description: "true = every paired device may talk to Hermes even when GATEWAY_ALLOWED_USERS is set (the hub admits only paired devices)"
+    prompt: "Allow every paired device (true/false)"
+    password: false

@@ -24,7 +24,6 @@ import asyncio
 import contextlib
 import json
 import logging
-import os
 import re
 import socket
 import time
@@ -187,6 +186,8 @@ class _HubTap:
         return getattr(self._hub, name)
 
     async def send_control(self, device_id: str, msg: dict) -> bool:
+        if msg.get("type") == "play.begin":
+            await self._adapter._stop_stream(device_id)  # one voice per device: never interleave
         ok = await self._hub.send_control(device_id, msg)
         if ok:
             self._adapter._observe_control(device_id, msg)
@@ -304,6 +305,9 @@ class HousemateAdapter(BasePlatformAdapter):
         self._wire(store, registry, hub)
         self._seed_rooms()
         self._refresh_allowlist()
+        warning = self._access_warning()
+        if warning:
+            log.warning("housemate: %s", warning)
 
         from .core.control import HubServices, register_local_services
 
@@ -486,6 +490,17 @@ class HousemateAdapter(BasePlatformAdapter):
             log.exception("housemate: reading paired devices failed")
             return
         self.config.extra["allow_from"] = paired
+
+    def _access_warning(self) -> str | None:
+        """Hermes reads the paired-device list (``allow_from``) only when no env allowlist is set. With
+        ``GATEWAY_ALLOWED_USERS`` set (often for another platform) every room would be ignored."""
+        if _truthy(_secret("HOUSEMATE_ALLOW_ALL_DEVICES")) or _secret("HOUSEMATE_ALLOWED_DEVICES"):
+            return None
+        if not _secret("GATEWAY_ALLOWED_USERS"):
+            return None
+        return ("GATEWAY_ALLOWED_USERS is set, so Hermes ignores Housemate's paired devices and drops "
+                "what they say. Set HOUSEMATE_ALLOW_ALL_DEVICES=true (the hub admits only paired devices) "
+                "or list device ids in HOUSEMATE_ALLOWED_DEVICES.")
 
     def _device_allowed(self, device_id: str | None) -> bool:
         """May this device talk to Hermes (and so answer its prompts)? The same order Hermes's own
@@ -1122,6 +1137,19 @@ class HousemateAdapter(BasePlatformAdapter):
         self._playback_started(device_id, stream_id, kind, rate)
         stream.task = self._spawn(self._run_stream(stream))
         return stream
+
+    async def _stop_stream(self, device_id: str) -> None:
+        """An announcement is about to play on this device: end our reply or question stream first
+        and wait until its ``play.abort`` is out. The satellite appends every PCM frame to the newest
+        ``play.begin``, so two senders at once would interleave."""
+        stream = self._streams.get(device_id)
+        if stream is None or stream.playout.ended:
+            return
+        stream.playout.abort()
+        task = stream.task
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            with contextlib.suppress(Exception):
+                await asyncio.wait({task}, timeout=1.0)
 
     async def _run_stream(self, stream: _Stream) -> None:
         result = "failed"
@@ -1803,7 +1831,7 @@ class HousemateAdapter(BasePlatformAdapter):
         room = self._chat_room(chat_id)
         if room:
             return [room]
-        home = (os.environ.get("HOUSEMATE_HOME_CHANNEL") or "").strip()
+        home = _secret("HOUSEMATE_HOME_CHANNEL")
         if home and self._chat_room(home):
             return [self._chat_room(home)]
         latest = self.router.latest_turn(chat_id)

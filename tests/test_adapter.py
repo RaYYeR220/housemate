@@ -399,3 +399,48 @@ async def test_prewarm_warms_tts_even_before_any_pairing(tmp_path):
     k = Kit(tmp_path).wire()
     await k.adapter._prewarm()
     assert k.events == [] and k.tts.texts == ["Ready."]
+
+
+# --- one voice per device (review M5) --------------------------------------------------------------
+
+
+async def test_announcement_never_interleaves_with_a_reply_stream(kit):
+    """A timer ring or announcement on a device that is speaking a reply: the reply stream is
+    stopped (play.abort) before the announcement's play.begin, and none of its PCM follows."""
+    await speak(kit)
+    handle = await kit.adapter.begin_streaming_tts("household", AudioFormat(sample_rate=RATE))
+    reply = b"\x01\x00" * (RATE * 2)  # 2 s of reply audio, paced in real time
+    await kit.adapter.write_streaming_tts(handle, reply)
+    await asyncio.sleep(0.1)
+    await kit.adapter.announcer.say("kitchen", "Dinner is ready.")
+    await kit.settle()
+    wire = kit.hub.to("dev-kitchen")
+    begins = [i for i, (k, m) in enumerate(wire) if k == "control" and m["type"] == "play.begin"]
+    rep_begin, say_begin = begins[0], begins[-1]
+    assert wire[rep_begin][1]["stream_id"].startswith("rep-")
+    assert wire[say_begin][1]["stream_id"].startswith("say-")
+    rep_id = wire[rep_begin][1]["stream_id"]
+    aborts = [i for i, (k, m) in enumerate(wire) if k == "control" and m["type"] == "play.abort" and m["stream_id"] == rep_id]
+    assert aborts and aborts[0] < say_begin
+    after = [m for k, m in wire[say_begin:] if k == "pcm"]
+    assert after and all(b"\x01\x00\x01\x00" not in chunk for chunk in after)
+
+
+# --- access warnings (review M6) -------------------------------------------------------------------
+
+
+def test_warns_when_a_gateway_allowlist_hides_paired_devices(tmp_path, monkeypatch):
+    """GATEWAY_ALLOWED_USERS (set for Telegram, say) makes Hermes ignore the paired-device list:
+    every utterance would be dropped silently. connect() logs what to set instead."""
+    for name in ("GATEWAY_ALLOWED_USERS", "HOUSEMATE_ALLOWED_DEVICES", "HOUSEMATE_ALLOW_ALL_DEVICES"):
+        monkeypatch.delenv(name, raising=False)
+    adapter = Kit(tmp_path).adapter
+    assert adapter._access_warning() is None
+    monkeypatch.setenv("GATEWAY_ALLOWED_USERS", "123456789")
+    warning = adapter._access_warning()
+    assert warning and "HOUSEMATE_ALLOW_ALL_DEVICES=true" in warning
+    monkeypatch.setenv("HOUSEMATE_ALLOW_ALL_DEVICES", "true")
+    assert adapter._access_warning() is None
+    monkeypatch.delenv("HOUSEMATE_ALLOW_ALL_DEVICES")
+    monkeypatch.setenv("HOUSEMATE_ALLOWED_DEVICES", "dev-kitchen")
+    assert adapter._access_warning() is None  # an explicit device list is the owner's choice

@@ -35,3 +35,15 @@ def test_pyproject_dependencies_have_upper_bounds():
     assert deps, "dependencies must be declared"
     for dep in deps:
         assert ">=" in dep and "<" in dep, f"{dep} needs a floor and an upper bound"
+
+
+def test_manifest_declares_every_env_the_plugin_reads():
+    """Rule 6 (review L3/M6): every env var Housemate reads is in optional_env."""
+    import re
+
+    declared = {e["name"] for e in load_manifest().get("optional_env", [])}
+    used: set[str] = set()
+    for path in [ROOT / "__init__.py", ROOT / "adapter.py", *(ROOT / "core").glob("*.py")]:
+        used |= set(re.findall(r"[\"'](HOUSEMATE_[A-Z_]+)[\"']", path.read_text(encoding="utf-8")))
+    assert used <= declared, f"undeclared: {sorted(used - declared)}"
+    assert "HOUSEMATE_ALLOW_ALL_DEVICES" in declared
