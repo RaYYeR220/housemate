@@ -183,6 +183,9 @@ class Hub:
         self.deny_ttl_s = deny_ttl_s
         self._clock = clock
         self.stats: dict[str, int] = {"dropped_frames": 0, "bad_messages": 0}
+        # Extra facts for the satellite's screen, sent with ``paired`` (wake phrase, conversation
+        # mode, hub name): a function the adapter sets. Never anything secret.
+        self.info: Callable[[], dict[str, Any]] = dict
 
         self._audio_cbs: list[Callable[[str, bytes], None]] = []
         self._control_cbs: list[Callable[[str, dict], Awaitable[None] | None]] = []
@@ -551,6 +554,7 @@ class Hub:
         await self._send(
             s,
             {
+                **self.info(),
                 "type": "paired",
                 "device_key": device_key,
                 "room": room_slug,

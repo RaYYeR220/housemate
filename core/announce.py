@@ -266,6 +266,17 @@ class Announcer:
         pcm = await self._speech_pcm(str(text).strip())
         return await self._stream(device_ids, pcm, "say")
 
+    async def voice_message(self, room: str, pcm: bytes, rate: int, from_name: str) -> list[str]:
+        """Play a recorded clip (the satellite's intercom) on the online devices of ``room``, with the
+        announcement chime and a caption naming the room it came from. Returns the devices that got it."""
+        device_ids = self._online(_slug_or_none(room))
+        pcm = bytes(pcm)[: len(pcm) - len(pcm) % 2]
+        if not device_ids or not pcm:
+            return []
+        await self._send_all(device_ids, {"type": "chime", "kind": "announce"})
+        await self._send_all(device_ids, {"type": "caption", "role": "intercom", "text": str(from_name)[:64]})
+        return await self._stream(device_ids, pcm, "ann", rate=rate)
+
     async def show(self, room: str, title: str, body: str) -> bool:
         """Show a card in ``room``. False when the room has no device online."""
         msg = {
@@ -310,15 +321,15 @@ class Announcer:
                 self._cache.popitem(last=False)
         return pcm
 
-    async def _stream(self, device_ids: list[str], pcm: bytes, prefix: str) -> list[str]:
+    async def _stream(self, device_ids: list[str], pcm: bytes, prefix: str, rate: int | None = None) -> list[str]:
         results = await asyncio.gather(
-            *(self._stream_one(d, pcm, f"{prefix}-{uuid.uuid4().hex[:12]}") for d in device_ids)
+            *(self._stream_one(d, pcm, f"{prefix}-{uuid.uuid4().hex[:12]}", rate) for d in device_ids)
         )
         return [d for d, ok in zip(device_ids, results) if ok]
 
-    async def _stream_one(self, device_id: str, pcm: bytes, stream_id: str) -> bool:
+    async def _stream_one(self, device_id: str, pcm: bytes, stream_id: str, rate: int | None = None) -> bool:
         try:
-            begin = {"type": "play.begin", "stream_id": stream_id, "sample_rate": self.sample_rate}
+            begin = {"type": "play.begin", "stream_id": stream_id, "sample_rate": int(rate or self.sample_rate)}
             if not await self._hub.send_control(device_id, begin):
                 return False
             ok = await self._hub.send_pcm(device_id, pcm)
