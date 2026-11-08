@@ -80,7 +80,7 @@ def test_results_metadata_never_contains_keys(monkeypatch):
     cfg = {"model": {"provider": "custom", "base_url": "https://api.example.com/v1", "default": "m", "api_key": "sk-secret"},
            "stt": {"provider": "local", "local": {"model": "small", "device": "cuda"}},
            "tts": {"provider": "cloud", "cloud": {"model": "tts-kokoro", "voice": "af_sky", "api_key": "sk-x",
-                                                    "base_url": "https://api.example.com/v1"}},
+                                                  "base_url": "https://api.example.com/v1"}},
            "platforms": {"housemate": {"end_silence_ms": 500}}}
     settings = run.settings_from_config(cfg)
     text = json.dumps(settings)

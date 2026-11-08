@@ -1,12 +1,12 @@
 {
  "environment": {
-  "date": "2026-11-08T21:22:05+00:00",
+  "date": "2026-11-08T23:16:36+00:00",
   "hermes_version": "0.23.0",
   "python": "3.14.3",
   "settings": {
    "llm": {
     "provider": "custom",
-    "model": "fast-hosted-model",
+    "model": "deepseek-v4-1-flash-1017-ultrafast",
     "host": "api.venice.ai"
    },
    "stt": {
@@ -44,23 +44,23 @@
    "python": "3.14.3",
    "real_hermes": true,
    "command": "pytest -q -m 'not slow'",
-   "passed": 364,
+   "passed": 458,
    "failed": 0,
    "skipped": 0,
    "deselected": 4,
    "errors": 0,
-   "summary": "364 passed, 4 deselected in 27.78s"
+   "summary": "458 passed, 4 deselected in 53.33s"
   },
   {
    "python": "3.11.1",
    "real_hermes": false,
    "command": "pytest -q -m 'not slow'",
-   "passed": 357,
+   "passed": 450,
    "failed": 0,
-   "skipped": 7,
+   "skipped": 8,
    "deselected": 4,
    "errors": 0,
-   "summary": "357 passed, 7 skipped, 4 deselected in 20.80s"
+   "summary": "450 passed, 8 skipped, 4 deselected in 25.63s"
   }
  ]
 }
