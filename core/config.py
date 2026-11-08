@@ -16,6 +16,7 @@ and is listed in ``warnings`` so the adapter can log it once.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
@@ -67,6 +68,7 @@ def _text(value: Any, max_len: int = 128) -> str | None:
 class HousemateConfig:
     conversation: Literal["household", "per_room"] = "household"
     bind_host: str = "0.0.0.0"
+    advertise_host: str = ""  # the host name or address the QR code and the CLI show first
     port: int = DEFAULT_PORT
     control_port: int = DEFAULT_CONTROL_PORT
     tls: bool = True
@@ -107,6 +109,12 @@ class HousemateConfig:
                 changes["bind_host"] = host
             else:
                 bad("bind_host", "must be an address such as 0.0.0.0")
+        if "advertise_host" in extra:
+            host = _text(extra["advertise_host"], 253)
+            if host is not None and re.fullmatch(r"[A-Za-z0-9.\-:\[\]]+", host):
+                changes["advertise_host"] = host
+            else:
+                bad("advertise_host", "must be a host name or an IP address")
         for key in ("port", "control_port"):
             if key in extra:
                 port = _port(extra[key])

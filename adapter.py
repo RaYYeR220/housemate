@@ -273,7 +273,7 @@ class HousemateAdapter(BasePlatformAdapter):
         from .core.hub import Hub, HubPortInUse
         from .core.rooms import RoomRegistry
         from .core.store import HousemateStore
-        from .core.tls import ensure_self_signed_cert, lan_hosts, lan_ipv4s
+        from .core.tls import ensure_self_signed_cert, hub_urls, lan_hosts
 
         self._loop = asyncio.get_running_loop()
         data_dir = Path(plugin_data_dir(PLATFORM_NAME))
@@ -283,7 +283,9 @@ class HousemateAdapter(BasePlatformAdapter):
             registry = RoomRegistry()
             cert = key = None
             if self.cfg.tls:
-                cert, key, self.fingerprint = await asyncio.to_thread(ensure_self_signed_cert, data_dir, lan_hosts())
+                advertised = [self.cfg.advertise_host] if self.cfg.advertise_host else []
+                cert, key, self.fingerprint = await asyncio.to_thread(
+                    ensure_self_signed_cert, data_dir, lan_hosts(advertised))
             hub = Hub(store, registry, host=self.cfg.bind_host, port=self.cfg.port, cert=cert, key=key,
                       web_root=WEB_ROOT, tls=self.cfg.tls)
             hub.info = self._satellite_info
@@ -298,7 +300,7 @@ class HousemateAdapter(BasePlatformAdapter):
             return False
 
         scheme = "https" if self.cfg.tls else "http"
-        self.urls = [f"{scheme}://{ip}:{hub.port}" for ip in lan_ipv4s()] + [f"{scheme}://localhost:{hub.port}"]
+        self.urls = hub_urls(scheme, hub.port, self.cfg.advertise_host)
         self._wire(store, registry, hub)
         self._seed_rooms()
         self._refresh_allowlist()

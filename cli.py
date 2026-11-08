@@ -164,10 +164,10 @@ def _hub_info(client) -> dict:
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes
 
-    from .core.tls import lan_ipv4s
+    from .core.tls import hub_urls
 
     fingerprint = x509.load_pem_x509_certificate(cert.read_bytes()).fingerprint(hashes.SHA256()).hex(":").upper()
-    urls = [f"https://{ip}:{HUB_PORT}" for ip in lan_ipv4s()] or [f"https://127.0.0.1:{HUB_PORT}"]
+    urls = hub_urls("https", HUB_PORT)
     return {"ok": True, "hub_url": urls[0], "urls": urls, "fingerprint": fingerprint, "offline": True}
 
 

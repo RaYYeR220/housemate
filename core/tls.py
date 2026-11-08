@@ -5,10 +5,11 @@ from __future__ import annotations
 import datetime as dt
 import ipaddress
 import os
+import re
 import socket
 from pathlib import Path
 
-__all__ = ["CERT_FILE", "KEY_FILE", "ensure_self_signed_cert", "lan_hosts", "lan_ipv4s"]
+__all__ = ["CERT_FILE", "KEY_FILE", "ensure_self_signed_cert", "hub_urls", "lan_hosts", "lan_ipv4s", "rank_lan_ipv4s"]
 
 CERT_FILE = "hub-cert.pem"
 KEY_FILE = "hub-key.pem"
@@ -16,40 +17,116 @@ VALIDITY_DAYS = 825
 RENEW_BEFORE_DAYS = 30
 
 
-def lan_ipv4s() -> list[str]:
-    """Best-effort list of this machine's non-loopback IPv4 addresses."""
-    found: list[str] = []
+# Adapters a phone on the home Wi-Fi cannot reach: VPNs, VM host-only networks, containers.
+_VIRTUAL_NAME = re.compile(
+    r"virtualbox|vbox|vmware|vmnet|vethernet|hyper-v|wsl|docker|podman|virbr|^br-|^veth|"
+    r"tailscale|zerotier|^zt|wireguard|^wg\d|^utun|^tun\d|^tap\d|npcap|bluetooth",
+    re.I,
+)
+_CGNAT = ipaddress.ip_network("100.64.0.0/10")  # Tailscale and carrier-grade NAT
+_VIRTUAL_NETS = (ipaddress.ip_network("192.168.56.0/24"),)  # VirtualBox's default host-only network
+_HOME_NETS = (ipaddress.ip_network("192.168.0.0/16"), ipaddress.ip_network("10.0.0.0/8"))
+_OTHER_PRIVATE = ipaddress.ip_network("172.16.0.0/12")
+_ROUTE_PROBES = ("1.1.1.1", "192.168.0.1", "10.255.255.255")  # default route, then LAN routes
+
+
+def _interface_addresses() -> list[tuple[str, str]]:
+    """``(interface name, IPv4)`` for every interface that is up; names are "" when unknown."""
+    found: list[tuple[str, str]] = []
+    try:
+        import psutil  # optional: present wherever Hermes is installed
+
+        stats = psutil.net_if_stats()
+        for name, addrs in psutil.net_if_addrs().items():
+            if name in stats and not stats[name].isup:
+                continue
+            found += [(name, a.address) for a in addrs if a.family == socket.AF_INET]
+    except Exception:
+        pass
     try:
         for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
-            found.append(info[4][0])
+            found.append(("", info[4][0]))
     except OSError:
         pass
-    # The routing table's pick for a LAN peer; connect() on UDP sends no packet.
-    for probe in ("192.168.0.1", "10.255.255.255"):
+    return found
+
+
+def _route_ips() -> list[str]:
+    """The source address the routing table picks for the internet and for LAN peers. ``connect()``
+    on a UDP socket sends no packet."""
+    picked: list[str] = []
+    for probe in _ROUTE_PROBES:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             s.connect((probe, 1))
-            found.append(s.getsockname()[0])
+            picked.append(s.getsockname()[0])
         except OSError:
             pass
         finally:
             s.close()
-    out: list[str] = []
-    for ip in found:
+    return picked
+
+
+def rank_lan_ipv4s(interfaces: list[tuple[str, str]], route_ips: list[str]) -> list[str]:
+    """This machine's IPv4 addresses, the one a phone on the home network most likely reaches first.
+
+    1. a private address (192.168/16, 10/8, 172.16/12) the default route uses, on a real adapter;
+    2. other 192.168/16 and 10/8 addresses; 3. other 172.16/12 ones (often WSL, Docker);
+    4. other routable ones; 5. virtual adapters (VirtualBox, Hyper-V/WSL, VPNs, containers);
+    6. CGNAT 100.64/10 (Tailscale). Loopback, link-local and multicast are left out.
+    """
+    names: dict[str, str] = {}
+    order: list[str] = []
+    for name, ip in [*interfaces, *(("", ip) for ip in route_ips)]:
+        if ip not in names:
+            order.append(ip)
+            names[ip] = name or ""
+        elif name and not names[ip]:
+            names[ip] = name
+    routed = set(route_ips)
+
+    def tier(ip: str, addr: ipaddress.IPv4Address) -> int:
+        virtual = bool(_VIRTUAL_NAME.search(names[ip])) or any(addr in net for net in _VIRTUAL_NETS)
+        if addr in _CGNAT:
+            return 6
+        if virtual:
+            return 5
+        if addr.is_private and ip in routed:
+            return 1
+        if any(addr in net for net in _HOME_NETS):
+            return 2
+        if addr in _OTHER_PRIVATE:
+            return 3
+        return 4
+
+    ranked: list[tuple[int, int, str]] = []
+    for position, ip in enumerate(order):
         try:
             addr = ipaddress.ip_address(ip)
         except ValueError:
             continue
-        if addr.is_loopback or addr.is_unspecified or addr.is_link_local:
+        if addr.version != 4 or addr.is_loopback or addr.is_unspecified or addr.is_link_local or addr.is_multicast:
             continue
-        if ip not in out:
-            out.append(ip)
-    return out
+        ranked.append((tier(ip, addr), position, ip))
+    return [ip for _, _, ip in sorted(ranked)]
 
 
-def lan_hosts() -> list[str]:
-    """Names and addresses the hub certificate should cover."""
-    hosts = lan_ipv4s()
+def lan_ipv4s() -> list[str]:
+    """This machine's non-loopback IPv4 addresses, best first for the QR code and the CLI."""
+    return rank_lan_ipv4s(_interface_addresses(), _route_ips())
+
+
+def hub_urls(scheme: str, port: int, advertise_host: str = "") -> list[str]:
+    """The URLs a satellite can open, best first (the QR code and ``hermes housemate pair`` use the
+    first): ``platforms.housemate.advertise_host`` when set, the ranked LAN addresses, localhost."""
+    hosts = [h for h in (advertise_host, *lan_ipv4s()) if h]
+    urls = [f"{scheme}://{h}:{port}" for h in dict.fromkeys(hosts)]
+    return urls + [f"{scheme}://localhost:{port}"]
+
+
+def lan_hosts(extra: list[str] | None = None) -> list[str]:
+    """Names and addresses the hub certificate should cover (``extra`` first: an advertised host)."""
+    hosts = [h for h in (extra or []) if h] + lan_ipv4s()
     try:
         name = socket.gethostname()
         if name:
