@@ -1,0 +1,151 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 600" width="1000" height="600" role="img" aria-labelledby="title desc">
+  <title id="title">How a question travels through Housemate</title>
+  <desc id="desc">Room devices stream microphone audio to the Housemate hub inside the Hermes gateway. The hub runs the wake word and voice activity detection per device, picks the nearest device, routes the clip into one household conversation, and Hermes transcribes it, runs the agent and streams speech back. The hub plays it on the device that asked. Timers, announcements and spoken approvals run on the hub. A loopback control API serves the agent tools, the CLI and the Desktop Rooms page.</desc>
+  <style>
+    .bg { fill: #fbf8f4; }
+    .zone { fill: #ffffff; stroke: #e6ddd2; stroke-width: 1; }
+    .box { fill: #fbf8f4; stroke: #d8ccbf; stroke-width: 1; }
+    .hot { fill: #fbe8e1; stroke: #c4452a; stroke-width: 1.2; }
+    .h { font: 600 15px system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; fill: #1d1a17; }
+    .k { font: 600 11px system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; letter-spacing: 0.08em; fill: #b23c22; }
+    .t { font: 600 13px system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; fill: #1d1a17; }
+    .s { font: 400 11px system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; fill: #6b625a; }
+    .au { stroke: #c4452a; stroke-width: 2; fill: none; }
+    .ct { stroke: #8a8178; stroke-width: 1.5; stroke-dasharray: 5 4; fill: none; }
+    .aha { fill: #c4452a; }
+    .ahc { fill: #8a8178; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #15171a; }
+      .zone { fill: #1b1e22; stroke: #30353b; }
+      .box { fill: #23272d; stroke: #3b4047; }
+      .hot { fill: #3a221c; stroke: #e0674c; }
+      .h, .t { fill: #eee8e1; }
+      .k { fill: #ef8166; }
+      .s { fill: #a8a097; }
+      .au { stroke: #e0674c; }
+      .aha { fill: #e0674c; }
+      .ct { stroke: #8f979f; }
+      .ahc { fill: #8f979f; }
+    }
+  </style>
+  <defs>
+    <marker id="ma" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="aha"/>
+    </marker>
+    <marker id="mc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" class="ahc"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1000" height="600" rx="16"/>
+
+  <!-- heading + legend -->
+  <text class="h" x="16" y="34">How a question travels</text>
+  <line class="au" x1="790" y1="30" x2="822" y2="30"/>
+  <text class="s" x="830" y="34">audio</text>
+  <line class="ct" x1="884" y1="30" x2="916" y2="30"/>
+  <text class="s" x="924" y="34">control</text>
+
+  <!-- zones -->
+  <rect class="zone" x="16" y="52" width="184" height="532" rx="12"/>
+  <text class="k" x="32" y="78">ROOMS</text>
+  <text class="s" x="32" y="95">a browser on an old device</text>
+
+  <rect class="zone" x="216" y="52" width="472" height="532" rx="12"/>
+  <text class="k" x="232" y="78">HOUSEMATE HUB</text>
+  <text class="s" x="232" y="95">inside the Hermes gateway process</text>
+
+  <rect class="zone" x="704" y="52" width="280" height="532" rx="12"/>
+  <text class="k" x="720" y="78">HERMES</text>
+  <text class="s" x="720" y="95">your models, tools and approvals</text>
+
+  <!-- lane 1: voice in -->
+  <rect class="box" x="32" y="116" width="152" height="56" rx="8"/>
+  <text class="t" x="108" y="140" text-anchor="middle">Microphone</text>
+  <text class="s" x="108" y="158" text-anchor="middle">16 kHz PCM over WSS</text>
+
+  <rect class="box" x="232" y="116" width="136" height="56" rx="8"/>
+  <text class="t" x="300" y="140" text-anchor="middle">Wake word + VAD</text>
+  <text class="s" x="300" y="158" text-anchor="middle">per device, on the hub</text>
+
+  <rect class="hot" x="380" y="116" width="144" height="56" rx="8"/>
+  <text class="t" x="452" y="140" text-anchor="middle">Arbiter</text>
+  <text class="s" x="452" y="158" text-anchor="middle">nearest device answers</text>
+
+  <rect class="box" x="536" y="116" width="136" height="56" rx="8"/>
+  <text class="t" x="604" y="140" text-anchor="middle">Router</text>
+  <text class="s" x="604" y="158" text-anchor="middle">household chat + queue</text>
+
+  <rect class="box" x="720" y="116" width="248" height="56" rx="8"/>
+  <text class="t" x="844" y="140" text-anchor="middle">Speech-to-text</text>
+  <text class="s" x="844" y="158" text-anchor="middle">your configured provider</text>
+
+  <line class="au" x1="184" y1="144" x2="230" y2="144" marker-end="url(#ma)"/>
+  <line class="au" x1="368" y1="144" x2="378" y2="144" marker-end="url(#ma)"/>
+  <line class="au" x1="524" y1="144" x2="534" y2="144" marker-end="url(#ma)"/>
+  <line class="au" x1="672" y1="144" x2="718" y2="144" marker-end="url(#ma)"/>
+
+  <!-- agent -->
+  <rect class="box" x="720" y="196" width="248" height="56" rx="8"/>
+  <text class="t" x="844" y="220" text-anchor="middle">Agent + tools</text>
+  <text class="s" x="844" y="238" text-anchor="middle">housemate_* tools and all the others</text>
+  <line class="au" x1="844" y1="172" x2="844" y2="194" marker-end="url(#ma)"/>
+
+  <!-- lane 2: voice out -->
+  <rect class="box" x="720" y="276" width="248" height="56" rx="8"/>
+  <text class="t" x="844" y="300" text-anchor="middle">Text-to-speech, streamed</text>
+  <text class="s" x="844" y="318" text-anchor="middle">your provider, or housemate-piper</text>
+  <line class="au" x1="844" y1="252" x2="844" y2="274" marker-end="url(#ma)"/>
+
+  <rect class="box" x="536" y="276" width="136" height="56" rx="8"/>
+  <text class="t" x="604" y="300" text-anchor="middle">Playout</text>
+  <text class="s" x="604" y="318" text-anchor="middle">to the asking device</text>
+  <line class="au" x1="720" y1="304" x2="674" y2="304" marker-end="url(#ma)"/>
+
+  <rect class="box" x="32" y="276" width="152" height="56" rx="8"/>
+  <text class="t" x="108" y="300" text-anchor="middle">Speaker + screen</text>
+  <text class="s" x="108" y="318" text-anchor="middle">reply, captions, cards</text>
+  <line class="au" x1="536" y1="304" x2="186" y2="304" marker-end="url(#ma)"/>
+  <text class="s" x="360" y="296" text-anchor="middle">reply audio + caption, then a follow-up window</text>
+
+  <!-- lane 3: hub services -->
+  <rect class="box" x="232" y="372" width="136" height="56" rx="8"/>
+  <text class="t" x="300" y="396" text-anchor="middle">Timers + alarms</text>
+  <text class="s" x="300" y="414" text-anchor="middle">ring with no LLM</text>
+
+  <rect class="box" x="380" y="372" width="144" height="56" rx="8"/>
+  <text class="t" x="452" y="396" text-anchor="middle">Announce + intercom</text>
+  <text class="s" x="452" y="414" text-anchor="middle">chime + speech in rooms</text>
+
+  <rect class="hot" x="536" y="372" width="136" height="56" rx="8"/>
+  <text class="t" x="604" y="396" text-anchor="middle">Spoken approvals</text>
+  <text class="s" x="604" y="414" text-anchor="middle">card + answer window</text>
+
+  <rect class="box" x="720" y="372" width="248" height="56" rx="8"/>
+  <text class="t" x="844" y="396" text-anchor="middle">Approval system</text>
+  <text class="s" x="844" y="414" text-anchor="middle">resolve_gateway_approval_card</text>
+  <line class="ct" x1="674" y1="400" x2="718" y2="400" marker-start="url(#mc)" marker-end="url(#mc)"/>
+
+  <rect class="box" x="32" y="372" width="152" height="56" rx="8"/>
+  <text class="t" x="108" y="396" text-anchor="middle">Say it or tap it</text>
+  <text class="s" x="108" y="414" text-anchor="middle">stop, approve, deny</text>
+  <line class="ct" x1="186" y1="400" x2="230" y2="400" marker-start="url(#mc)" marker-end="url(#mc)"/>
+
+  <!-- lane 4: control -->
+  <rect class="box" x="232" y="476" width="440" height="56" rx="8"/>
+  <text class="t" x="452" y="500" text-anchor="middle">Control API · 127.0.0.1:8743</text>
+  <text class="s" x="452" y="518" text-anchor="middle">used by the agent tools, hermes housemate and the Desktop Rooms page</text>
+
+  <rect class="box" x="720" y="476" width="248" height="56" rx="8"/>
+  <text class="t" x="844" y="500" text-anchor="middle">Desktop Rooms page + CLI</text>
+  <text class="s" x="844" y="518" text-anchor="middle">REST on 0.23.0, plugin RPC on newer</text>
+  <line class="ct" x1="720" y1="496" x2="674" y2="496" marker-end="url(#mc)"/>
+  <path class="ct" d="M720,244 H696 V516 H674" marker-end="url(#mc)"/>
+
+  <rect class="box" x="32" y="476" width="152" height="56" rx="8"/>
+  <text class="t" x="108" y="500" text-anchor="middle">Pairing</text>
+  <text class="s" x="108" y="518" text-anchor="middle">6-digit code, OK on the PC</text>
+  <line class="ct" x1="186" y1="504" x2="230" y2="504" marker-start="url(#mc)" marker-end="url(#mc)"/>
+
+  <text class="s" x="232" y="566">Port 8742 (HTTPS + WSS, self-signed) serves the page and the audio sockets; only paired devices are heard.</text>
+</svg>
