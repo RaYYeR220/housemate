@@ -1,9 +1,9 @@
 """Tiny deterministic parsers for spoken answers: yes/no, "the second one", "stop".
 
 Used where a full agent turn would be wrong or too slow: answering an approval prompt, picking a
-clarify choice, silencing a ringing timer. Everything here fails closed: an answer that is not
-clearly "approve" is never read as approve, and anything ambiguous returns None so the caller can
-ask again or let the prompt time out.
+clarify choice, silencing a ringing timer. Everything here fails closed: only a short utterance that
+is entirely an approve phrase reads as approve, and anything ambiguous returns None so the caller
+can ask again or let the prompt time out.
 """
 
 from __future__ import annotations
@@ -29,43 +29,57 @@ def _tokens(text: str) -> list[str]:
     return normalize(text).split()
 
 
-def _find(tokens: list[str], phrase: tuple[str, ...]) -> list[int]:
-    n = len(phrase)
-    return [i for i in range(len(tokens) - n + 1) if tuple(tokens[i : i + n]) == phrase]
-
-
 # --- yes / no ----------------------------------------------------------------------------------
 
+# The whole answer must be one of these (plus a little filler), like ``is_stop``. A word anywhere in a
+# longer sentence never counts: "yes, but what will it delete?" and "your approve timer is done" are
+# not answers. "yeah" is left out on purpose: it is what people (and TVs) say in passing.
 _APPROVE = [
-    ("approve",), ("approved",), ("yes",), ("yeah",), ("yep",), ("yup",),
-    ("do", "it"), ("go", "ahead"), ("confirm",), ("confirmed",),
+    ("approve",), ("approved",), ("yes",), ("yes", "please"), ("do", "it"), ("go", "ahead"), ("confirm",),
 ]
 _DENY = [
     ("deny",), ("denied",), ("no",), ("nope",), ("nah",), ("don't",), ("dont",), ("do", "not"),
-    ("stop",), ("cancel",),
+    ("don't", "do", "it"), ("dont", "do", "it"), ("do", "not", "do", "it"), ("stop",), ("cancel",),
+    ("cancel", "that"), ("cancel", "it"), ("no", "thanks"), ("no", "thank", "you"),
 ]
-_NEGATORS = {"no", "don't", "dont", "not", "never"}
+_YES_NO_FILLER = {"ok", "okay", "please", "hey", "hermes", "jarvis"}
+MAX_ANSWER_WORDS = 4
+
+
+def _covered_by(tokens: list[str], phrases: list[tuple[str, ...]]) -> bool:
+    """Is ``tokens`` exactly a run of ``phrases`` (longest match first)?"""
+    ordered = sorted(phrases, key=len, reverse=True)
+    i = 0
+    while i < len(tokens):
+        for phrase in ordered:
+            if tuple(tokens[i : i + len(phrase)]) == phrase:
+                i += len(phrase)
+                break
+        else:
+            return False
+    return True
 
 
 def parse_yes_no(text: str) -> Literal["approve", "deny"] | None:
-    """"Approve." -> approve, "no thanks" -> deny, "maybe" -> None.
+    """"Approve." -> approve, "no thanks" -> deny, anything else -> None.
 
-    Both an approve and a deny word ("yes no") is ambiguous -> None. An approve phrase right
-    after a negation ("don't do it") counts as deny.
+    Strict: at most four words, no question, and every word (after "ok", "please" and the wake
+    phrase) part of an approve phrase, or every word part of a deny phrase. Hedged ("yes, but…",
+    "wait"), mixed ("yes no", "don't approve"), questions and longer sentences are None, so the
+    caller asks again and in the end lets the prompt time out (deny).
     """
-    tokens = _tokens(text)
-    if not tokens:
+    raw = str(text or "")
+    if "?" in raw:
         return None
-    approve = 0
-    for phrase in _APPROVE:
-        for i in _find(tokens, phrase):
-            if i > 0 and tokens[i - 1] in _NEGATORS:
-                continue  # "don't do it", "do not go ahead"
-            approve += 1
-    deny = sum(len(_find(tokens, phrase)) for phrase in _DENY)
-    if approve and not deny:
+    tokens = _tokens(raw)
+    if not tokens or len(tokens) > MAX_ANSWER_WORDS:
+        return None
+    words = [t for t in tokens if t not in _YES_NO_FILLER]
+    if not words:
+        return None
+    if _covered_by(words, _APPROVE):
         return "approve"
-    if deny and not approve:
+    if _covered_by(words, _DENY):
         return "deny"
     return None
 

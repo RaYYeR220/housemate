@@ -33,6 +33,22 @@ def test_marker_roundtrip_with_gateway_framing():
     assert split_marker(message) == (token, "Approve.")
 
 
+def test_marker_with_hermes_framing_keeps_brackets_in_the_transcript():
+    """Hermes prepends channel_context: ``<marker>\n\n[New message]\n"<transcript>"``. Brackets the
+    speech-to-text put inside the transcript stay (review H1: "yes [no]" must not become "yes")."""
+    token = new_token()
+    message = f'{make_marker(token)}\n\n[New message]\n"yes [no]"'
+    assert split_marker(message) == (token, "yes [no]")
+    assert split_marker(f'{make_marker(token)}\n\n[New message]\n"Approve."') == (token, "Approve.")
+
+
+def test_marker_with_a_gateway_note_only_is_an_empty_transcript():
+    token = new_token()
+    note = ("[The user sent a voice message but it came through empty or inaudible — speech-to-text "
+            "returned no words. Do not guess at the content; ask the user to resend or type it out.]")
+    assert split_marker(f"{make_marker(token)}\n\n[New message]\n{note}") == (token, "")
+
+
 def test_marker_absent_or_malformed():
     assert split_marker("What is two plus two?") is None
     assert split_marker("[housemate-answer:short]") is None

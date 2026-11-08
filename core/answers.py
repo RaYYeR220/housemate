@@ -43,7 +43,8 @@ log = logging.getLogger(__name__)
 SIDE_CHAT = "housemate-answers"
 PLATFORM = "housemate"
 _MARKER_RE = re.compile(r"\[housemate-answer:([0-9a-f]{32})\]")
-_BRACKETED = re.compile(r"\[[^\]]{0,200}\]")
+_BRACKETED = re.compile(r"\[[^\]]*\]")
+_NEW_MESSAGE = "[New message]"
 _QUOTES = "\"'“”‘’«» \n\t"
 
 
@@ -58,17 +59,23 @@ def make_marker(token: str) -> str:
 def split_marker(text: Any) -> tuple[str, str] | None:
     """``(token, transcript)`` when ``text`` carries an answer marker, else None.
 
-    The gateway hands the hook something like ``"Approve."\\n\\n[housemate-answer:…]\\n\\n[New
-    message]``: the transcript (quoted) plus the channel context. Bracketed notes are dropped.
+    Hermes prepends the channel context, so the hook sees ``[housemate-answer:…]\n\n[New
+    message]\n"Approve."``: the marker, the gateway's framing and the transcript in quotes. The
+    transcript is taken verbatim from between the quotes (brackets inside it stay: "yes [no]" is not
+    "yes"). Without quotes only a gateway note is left (an inaudible clip): an empty transcript.
     """
     if not isinstance(text, str):
         return None
     match = _MARKER_RE.search(text)
     if match is None:
         return None
-    rest = _BRACKETED.sub(" ", text)
-    transcript = " ".join(rest.split()).strip(_QUOTES)
-    return match.group(1), transcript
+    rest = (text[: match.start()] + "\n" + text[match.end():]).replace(_NEW_MESSAGE, "\n")
+    first, last = rest.find('"'), rest.rfind('"')
+    if 0 <= first < last:
+        transcript = rest[first + 1 : last]
+    else:
+        transcript = _BRACKETED.sub(" ", rest)  # "[The user sent a voice message but it came through empty…]"
+    return match.group(1), " ".join(transcript.split()).strip(_QUOTES)
 
 
 @dataclass

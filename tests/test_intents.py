@@ -8,7 +8,11 @@ from housemate.core.intents import is_skip, is_stop, parse_choice, parse_yes_no
     [
         ("Approve.", "approve"),
         ("yes", "approve"),
-        ("Yeah, do it!", "approve"),
+        ("Yes, do it!", "approve"),
+        ("yes please", "approve"),
+        ("Approved.", "approve"),
+        ("OK, approve.", "approve"),
+        ("hey jarvis approve", "approve"),
         ("go ahead", "approve"),
         ("Confirm", "approve"),
         ("no thanks", "deny"),
@@ -22,10 +26,46 @@ from housemate.core.intents import is_skip, is_stop, parse_choice, parse_yes_no
         ("", None),
         ("what was the question", None),
         ("yes no", None),
+        ("No, don't do it.", "deny"),
+        ("no thank you", "deny"),
     ],
 )
 def test_yes_no_variants(text, expected):
     assert parse_yes_no(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # review H1: hedged answers, questions back, and our own ring text
+        "Yes, but what will it delete first?",
+        "Yeah, wait, what does that do?",
+        "Hold on, yeah, let me think",
+        "Do it later",
+        "Confirm what it does first",
+        "Your approve timer is done.",
+        "Your go ahead timer is done.",
+        # more of the same shape
+        "Yes?",
+        "approve?",
+        "yeah",
+        "yeah thanks",
+        "yes but",
+        "wait, yes",
+        "what",
+        "let me think",
+        "no wait yes",
+        "don't approve",
+        "yes please go ahead now",
+        "approve approve approve approve approve",
+        "ok",
+        "please",
+        "yes [no]",
+    ],
+)
+def test_yes_no_is_strict(text):
+    """Only a short, whole-utterance approve phrase approves; anything else is not an answer."""
+    assert parse_yes_no(text) is None
 
 
 def test_yes_no_ignores_case_and_curly_apostrophes():
