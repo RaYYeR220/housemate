@@ -1,0 +1,103 @@
+# openWakeWord automatic-training config for the "Hey Hermes" head.
+# Keys follow openWakeWord's examples/custom_model.yml (commit 368c037); paths are inside the
+# training container (data mounted at /data, outputs at /work). Run through oww_train.py.
+
+model_name: "hey_hermes"
+
+# Positive phrase. "hey" and "hermes" are both in CMUdict, which train.py needs to derive the
+# phoneme-overlap adversarial negatives (its DeepPhonemizer fallback for unknown words is offline).
+target_phrase:
+  - "hey hermes"
+
+# Curated near-misses, voiced by the same Piper generator as the positives. Piper reads them in
+# list order, one clip per entry, so oww_train.py repeats the list `custom_negative_repeat` times.
+custom_negative_phrases:
+  - "hey herman"
+  - "hey hermit"
+  - "hair mess"
+  - "hey there miss"
+  - "hey her mess"
+  - "her mess"
+  - "hermes"
+  - "hermes was the messenger of the gods"
+  - "I bought a hermes scarf"
+  - "hey hermione"
+  - "hey thermos"
+  - "hey herbs"
+  - "hey germs"
+  - "hey terms"
+  - "hey hector"
+  - "hey harness"
+  - "hey homies"
+  - "hey hummus"
+  - "hey mermaid"
+  - "hey miss"
+  - "hey james"
+  - "hey hers"
+  - "hey jarvis"
+  - "hey siri"
+  - "hey travis"
+  - "a hermit crab"
+  - "the hermetic seal"
+  - "hey, her messages are here"
+  - "say hermes"
+  - "hey her"
+custom_negative_repeat: 40
+
+# Synthetic clip counts for train.py's own generate step (positives and adversarial negatives each).
+n_samples: 25000
+n_samples_val: 3000
+
+# Extra positives (oww_train.py `extra_positives` stage, run before generate_clips): same generator and
+# generate_samples() call, but unmixed speakers (slerp weight 1.0 walks all 904 LibriTTS-R voices, which
+# covers non-US accents that train.py's 50/50 speaker mixes wash out) and punctuation for prosody.
+# Run 1 without these: 68 % clean recall, AU/GB/NZ/IN/African/Asian-English Edge voices missed;
+# run 2 with 15,000: 85 %. Run 3: 30,000.
+extra_positives:
+  texts: ["hey hermes", "hey, hermes.", "hey hermes!", "hey hermes."]
+  n_train: 30000
+  n_test: 3000
+  slerp_weights: [1.0]
+  noise_scales: [0.667, 0.98]
+  noise_scale_ws: [0.8, 0.98]
+  length_scales: [0.8, 1.0, 1.2]
+
+tts_batch_size: 100
+augmentation_batch_size: 16
+
+piper_sample_generator_path: "/opt/piper-sample-generator"
+output_dir: "/work/hey_hermes"
+
+rir_paths:
+  - "/data/mit_rirs"
+
+# AudioSet + FMA as in the upstream notebook, plus 10 s chunks of LibriSpeech dev-clean read speech
+# (prepare_data.py speechbg) so positives are also heard over running speech (run 2: 59 % recall with
+# background speech at 15-20 dB SNR vs 85 % clean). ~40 % of background draws are speech.
+background_paths:
+  - "/data/audioset_16k"
+  - "/data/fma"
+  - "/data/speech_bg_16k"
+background_paths_duplication_rate:
+  - 1
+  - 1
+  - 1
+
+false_positive_validation_data_path: "/data/features/validation_set_features.npy"
+
+augmentation_rounds: 1
+
+feature_data_files:
+  "ACAV100M_sample": "/data/features/openwakeword_features_ACAV100M_2000_hrs_16bit.npy"
+
+batch_n_per_class:
+  "ACAV100M_sample": 1024
+  "adversarial_negative": 50
+  "positive": 100
+
+model_type: "dnn"
+layer_size: 32
+
+steps: 50000
+max_negative_weight: 1000
+target_false_positives_per_hour: 0.2
