@@ -313,6 +313,23 @@ async def test_replaced_socket_is_untrusted_at_once(env):
     assert env.hub._sessions["dev-kitchen"].authed is True
 
 
+async def test_keyless_hellos_are_rate_limited_per_address():
+    """Review L5: each keyless hello writes to SQLite on the gateway loop; a script looping
+    connect/hello/close from one address is cut off."""
+    env = await _make_env(max_hellos_per_ip_per_min=3)
+    try:
+        for i in range(3):
+            s = await env.sat(f"dev-loop-{i}")
+            await s.recv_control(type="pair.code")
+            await s.close()
+        extra = await env.sat("dev-loop-x")
+        assert (await extra.recv_control(type="error"))["code"] == "rate_limited"
+        assert await extra.wait_closed() == 4429
+    finally:
+        await env.close()
+        await env.hub.stop()
+
+
 async def test_pairing_wait_times_out_cleanly():
     e = await _make_env(pairing_ttl_s=0.3)
     try:

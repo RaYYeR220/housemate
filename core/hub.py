@@ -20,6 +20,7 @@ import re
 import socket
 import ssl
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -166,6 +167,7 @@ class Hub:
         hello_timeout_s: float = 10.0,
         max_pending_per_ip: int = 5,
         max_pending_total: int = 10,
+        max_hellos_per_ip_per_min: int = 20,
         deny_ttl_s: float = 600,
         deny_ip_ttl_s: float = 120,
         clock: Callable[[], float] = time.time,
@@ -183,6 +185,7 @@ class Hub:
         self.hello_timeout_s = hello_timeout_s
         self.max_pending_per_ip = max_pending_per_ip
         self.max_pending_total = max_pending_total
+        self.max_hellos_per_ip_per_min = max_hellos_per_ip_per_min
         self.deny_ttl_s = deny_ttl_s
         self.deny_ip_ttl_s = deny_ip_ttl_s
         self._clock = clock
@@ -197,6 +200,7 @@ class Hub:
         self._pairing_cbs: list[Callable[[], None]] = []
         self._denied: dict[str, float] = {}  # device id -> refused until (hub clock)
         self._denied_ips: dict[str, float] = {}  # address -> no new pairing requests until (hub clock)
+        self._hellos_by_ip: dict[str, deque[float]] = {}  # address -> recent keyless hellos (hub clock)
         self._sessions: dict[str, _Session] = {}  # trusted, by device id
         self._waiting: dict[str, _Session] = {}  # waiting for approval, by code
         self._pending_by_ip: dict[str, dict[str, float]] = {}  # ip -> {code: expires_at}
@@ -530,6 +534,18 @@ class Hub:
                 await s.ws.close(code=CLOSE_DENIED, message=b"pairing denied")
                 return
             del self._denied_ips[s.ip]
+        recent = self._hellos_by_ip.setdefault(s.ip, deque())
+        while recent and recent[0] <= now - 60.0:
+            recent.popleft()
+        if len(recent) >= self.max_hellos_per_ip_per_min:
+            # Every keyless hello writes to the store on the gateway loop: cap how often one address may.
+            await self._send(s, {"type": "error", "code": "rate_limited", "message": "too many pairing requests from this address; wait a minute"})
+            await s.ws.close(code=CLOSE_RATE_LIMITED, message=b"rate limited")
+            return
+        recent.append(now)
+        if len(self._hellos_by_ip) > 1024:  # forget quiet addresses
+            for ip in [ip for ip, q in self._hellos_by_ip.items() if not q or q[-1] <= now - 60.0]:
+                del self._hellos_by_ip[ip]
         pending = self._pending_by_ip.setdefault(s.ip, {})
         for code, expires_at in list(pending.items()):
             if expires_at <= now:
