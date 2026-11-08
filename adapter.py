@@ -162,6 +162,7 @@ class _Prompt:
     smart_denied: bool = False  # Hermes's smart approval flagged the command: tap only
     presented: bool = False  # shown (and spoken, armed): the first open prompt of its room
     shown_to: set[str] = field(default_factory=set)  # devices that got the card: only they may tap
+    turn_id: str | None = None  # message id of the turn that asked (retired when Hermes is done with it)
 
 
 class _ReplyHandle(StreamingTTSHandle):
@@ -694,6 +695,13 @@ class HousemateAdapter(BasePlatformAdapter):
         chat_id = getattr(source, "chat_id", None)
         message_id = getattr(event, "message_id", None)
         if chat_id and message_id and chat_id != SIDE_CHAT:
+            # Hermes is done with this turn, so every prompt it asked is settled, even one answered
+            # on Desktop or cancelled by /stop: clear those cards so none blocks the room's next one.
+            stale = [p for p in self._prompts.values() if p.turn_id == message_id]
+            for prompt in stale:
+                self._prompts.pop(prompt.id, None)
+            for prompt in stale:
+                self._retire_prompt(prompt, "")
             turn = self.router.active_turn(chat_id)
             if turn is not None and turn.message_id == message_id:
                 if turn.device_id and turn.device_id not in self._playing:
@@ -1321,7 +1329,7 @@ class HousemateAdapter(BasePlatformAdapter):
                         ["Approve", "Deny"], request_id=prompt.request_id,
                         title="Flagged command: run it?" if flagged else "Run a command?",
                         detail=what, command=" ".join(str(prompt.command or "").split())[:400],
-                        spoken=question, smart_denied=flagged)
+                        spoken=question, smart_denied=flagged, turn_id=turn.message_id if turn else None)
         if not await self._open_prompt(entry):
             log.warning("housemate: no device online in %s for the approval; it will time out (deny)", room)
             return SendResult(success=False, error=f"no Housemate device is online in {room}")
@@ -1335,7 +1343,7 @@ class HousemateAdapter(BasePlatformAdapter):
         labels = [str(c) for c in (choices or []) if str(c).strip()]
         text, skippable = _split_skip_hint(question)
         entry = _Prompt("clarify", clarify_id, chat_id, session_key, room, device_id, _plain(text), labels,
-                        skippable=skippable)
+                        skippable=skippable, turn_id=turn.message_id if turn else None)
         spoken = entry.question
         if labels and len(labels) <= 6:
             spoken += " " + _read_choices(labels) + "."
@@ -1385,6 +1393,8 @@ class HousemateAdapter(BasePlatformAdapter):
             self._spawn(self._present_next(nxt))
 
     async def _present_next(self, prompt: _Prompt) -> None:
+        if prompt.id not in self._prompts or prompt.presented:
+            return  # settled (or brought up) meanwhile
         if not await self._present(prompt):
             log.warning("housemate: no device online in %s for the next %s; it shows when one connects",
                         prompt.room, prompt.kind)
@@ -1590,7 +1600,8 @@ class HousemateAdapter(BasePlatformAdapter):
             if stream is not None and stream.kind == "ask" and stream.ref == prompt.id:
                 stream.playout.abort()
         if prompt.room:
-            self._spawn(self._clear_prompt(prompt, note))
+            if prompt.presented:
+                self._spawn(self._clear_prompt(prompt, note))
             self._promote(prompt.room)
 
     async def _clear_prompt(self, prompt: _Prompt, note: str) -> None:

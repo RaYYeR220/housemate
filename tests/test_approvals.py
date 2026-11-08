@@ -492,3 +492,33 @@ def test_default_turn_timeout_outlasts_hermes_approval_timeout(monkeypatch):
     # an explicit setting is kept (the open-prompt hold still protects approvals)
     adapter = adapter_mod.HousemateAdapter(PlatformConfig(enabled=True, extra={"turn_timeout_s": 120}))
     assert adapter.router.turn_timeout_s == 120
+
+
+# --- prompts settled outside Housemate (review L7) ------------------------------------------------
+
+
+async def test_turn_end_retires_its_open_prompts(kit):
+    """An approval answered from Desktop or cancelled by /stop leaves no stale card, no armed answer,
+    and no prompt blocking the next one."""
+    first = await start_turn(kit)
+    await kit.adapter._send_exec_approval_prompt(approval("req-1"))
+    await kit.adapter._send_exec_approval_prompt(approval("req-2"))
+    await kit.settle()
+    await kit.adapter.on_processing_complete(first, "success")
+    await kit.settle()
+    assert kit.adapter._prompts == {}
+    assert kit.adapter.book.for_device("dev-kitchen") is None
+    assert kit.hub.controls("dev-kitchen", "prompt.clear")[-1]["id"] == "req-1"
+    assert [m["id"] for m in kit.hub.controls("dev-kitchen", "prompt")] == ["req-1"]  # req-2 never came up
+
+
+async def test_turn_end_keeps_prompts_of_a_newer_turn(kit):
+    first = await start_turn(kit)
+    await kit.adapter.send("household", "Done.", reply_to=first.message_id)
+    await kit.settle()
+    second = await start_turn(kit)
+    await kit.adapter._send_exec_approval_prompt(approval("req-3"))
+    await kit.settle()
+    await kit.adapter.on_processing_complete(first, "success")  # late signal for the first turn
+    assert "req-3" in kit.adapter._prompts
+    assert second.message_id != first.message_id
