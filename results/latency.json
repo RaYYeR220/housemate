@@ -1,0 +1,502 @@
+{
+ "environment": {
+  "date": "2026-11-08T21:16:50+00:00",
+  "hermes_version": "0.23.0",
+  "python": "3.14.3",
+  "settings": {
+   "llm": {
+    "provider": "custom",
+    "model": "fast-hosted-model",
+    "host": "api.venice.ai"
+   },
+   "stt": {
+    "provider": "local",
+    "language": "en",
+    "model": "small",
+    "device": "cuda",
+    "compute_type": "float16",
+    "vad": true
+   },
+   "tts": {
+    "provider": "housemate-piper",
+    "voice": "en_US-lessac-medium",
+    "streaming": {
+     "min_len": 20
+    }
+   },
+   "housemate": {
+    "end_silence_ms": 700,
+    "wake_model": "hey_jarvis",
+    "wake_threshold": 0.5,
+    "vad": "silero",
+    "conversation": "household"
+   }
+  },
+  "hardware": {
+   "os": "Windows-11-10.0.26300-SP0",
+   "cpu": "AMD Ryzen 5 5600X 6-Core Processor",
+   "cores": 12,
+   "gpu": "NVIDIA GeForce RTX 4060, 8188 MiB"
+  }
+ },
+ "metric": "end of speech (last speech frame by Silero VAD, sent in real time) -> first reply audio frame received by the satellite, same machine as the hub",
+ "room": "Kitchen",
+ "clips": [
+  {
+   "file": "wake_jarvis-math_enusaria.wav",
+   "speech_end_s": 2.26
+  },
+  {
+   "file": "three_times_three_enusguy.wav",
+   "speech_end_s": 2.68
+  }
+ ],
+ "warm_runs": 20,
+ "p50_s": 3.103,
+ "p95_s": 3.277,
+ "min_s": 2.82,
+ "max_s": 3.61,
+ "mean_s": 3.107,
+ "warm_up_s": [
+  6.773
+ ],
+ "stage_median_after_speech_end_s": {
+  "endpoint": 0.288,
+  "captured": 0.689,
+  "dispatch": 0.692,
+  "transcript": 1.415,
+  "llm_start": 1.494,
+  "tts_begin": 3.103,
+  "first_pcm_out": 3.104,
+  "satellite_first_pcm": 3.104
+ },
+ "stage_median_durations_s": {
+  "endpointing (silence wait)": 0.689,
+  "speech_to_text": 0.726,
+  "transcript_to_llm_request": 0.063,
+  "llm_and_tts_to_first_audio": 1.596,
+  "hub_to_satellite": 0.0
+ },
+ "runs": [
+  {
+   "run": 1,
+   "warm_up": true,
+   "clip": "wake_jarvis-math_enusaria.wav",
+   "latency_s": 6.773,
+   "transcript": "What's 2 plus 2?",
+   "reply": "Four.",
+   "stages": {
+    "endpoint": 0.275,
+    "captured": 0.675,
+    "dispatch": 0.679,
+    "transcript": 1.971,
+    "llm_start": 2.079,
+    "tts_begin": 6.772,
+    "first_pcm_in": 6.772,
+    "first_pcm_out": 6.772,
+    "reply_text": 6.895,
+    "satellite_first_pcm": 6.773
+   }
+  },
+  {
+   "run": 2,
+   "warm_up": false,
+   "clip": "three_times_three_enusguy.wav",
+   "latency_s": 3.058,
+   "transcript": "What is 3 times 3?",
+   "reply": "Nine.",
+   "stages": {
+    "endpoint": 0.268,
+    "captured": 0.668,
+    "dispatch": 0.671,
+    "transcript": 1.361,
+    "llm_start": 1.418,
+    "tts_begin": 3.057,
+    "first_pcm_in": 3.057,
+    "first_pcm_out": 3.057,
+    "reply_text": 3.211,
+    "satellite_first_pcm": 3.058
+   }
+  },
+  {
+   "run": 3,
+   "warm_up": false,
+   "clip": "wake_jarvis-math_enusaria.wav",
+   "latency_s": 3.277,
+   "transcript": "What's 2 plus 2?",
+   "reply": "Four.",
+   "stages": {
+    "endpoint": 0.309,
+    "captured": 0.709,
+    "dispatch": 0.712,
+    "transcript": 1.479,
+    "llm_start": 1.545,
+    "tts_begin": 3.276,
+    "first_pcm_in": 3.276,
+    "first_pcm_out": 3.277,
+    "reply_text": 3.407,
+    "satellite_first_pcm": 3.277
+   }
+  },
+  {
+   "run": 4,
+   "warm_up": false,
+   "clip": "three_times_three_enusguy.wav",
+   "latency_s": 3.141,
+   "transcript": "What is 3 times 3?",
+   "reply": "Nine.",
+   "stages": {
+    "endpoint": 0.307,
+    "captured": 0.707,
+    "dispatch": 0.71,
+    "transcript": 1.457,
+    "llm_start": 1.521,
+    "tts_begin": 3.14,
+    "first_pcm_in": 3.14,
+    "first_pcm_out": 3.141,
+    "reply_text": 3.262,
+    "satellite_first_pcm": 3.141
+   }
+  },
+  {
+   "run": 5,
+   "warm_up": false,
+   "clip": "wake_jarvis-math_enusaria.wav",
+   "latency_s": 3.103,
+   "transcript": "What's 2 plus 2?",
+   "reply": "Four.",
+   "stages": {
+    "endpoint": 0.284,
+    "captured": 0.684,
+    "dispatch": 0.687,
+    "transcript": 1.282,
+    "llm_start": 1.338,
+    "tts_begin": 3.102,
+    "first_pcm_in": 3.102,
+    "first_pcm_out": 3.103,
+    "reply_text": 3.214,
+    "satellite_first_pcm": 3.103
+   }
+  },
+  {
+   "run": 6,
+   "warm_up": false,
+   "clip": "three_times_three_enusguy.wav",
+   "latency_s": 2.857,
+   "transcript": "What is 3 times 3?",
+   "reply": "Nine.",
+   "stages": {
+    "endpoint": 0.283,
+    "captured": 0.683,
+    "dispatch": 0.686,
+    "transcript": 1.319,
+    "llm_start": 1.373,
+    "tts_begin": 2.856,
+    "first_pcm_in": 2.856,
+    "first_pcm_out": 2.856,
+    "reply_text": 2.991,
+    "satellite_first_pcm": 2.857
+   }
+  },
+  {
+   "run": 7,
+   "warm_up": false,
+   "clip": "wake_jarvis-math_enusaria.wav",
+   "latency_s": 3.61,
+   "transcript": "What's 2 plus 2?",
+   "reply": "Four.",
+   "stages": {
+    "endpoint": 0.308,
+    "captured": 0.708,
+    "dispatch": 0.711,
+    "transcript": 1.696,
+    "llm_start": 1.785,
+    "tts_begin": 3.61,
+    "first_pcm_in": 3.61,
+    "first_pcm_out": 3.61,
+    "reply_text": 3.727,
+    "satellite_first_pcm": 3.61
+   }
+  },
+  {
+   "run": 8,
+   "warm_up": false,
+   "clip": "three_times_three_enusguy.wav",
+   "latency_s": 3.026,
+   "transcript": "What is 3 times 3?",
+   "reply": "Nine.",
+   "stages": {
+    "endpoint": 0.311,
+    "captured": 0.711,
+    "dispatch": 0.714,
+    "transcript": 1.352,
+    "llm_start": 1.43,
+    "tts_begin": 3.024,
+    "first_pcm_in": 3.024,
+    "first_pcm_out": 3.025,
+    "reply_text": 3.144,
+    "satellite_first_pcm": 3.026
+   }
+  },
+  {
+   "run": 9,
+   "warm_up": false,
+   "clip": "wake_jarvis-math_enusaria.wav",
+   "latency_s": 3.04,
+   "transcript": "What's 2 plus 2?",
+   "reply": "Four.",
+   "stages": {
+    "endpoint": 0.283,
+    "captured": 0.683,
+    "dispatch": 0.687,
+    "transcript": 1.385,
+    "llm_start": 1.443,
+    "tts_begin": 3.04,
+    "first_pcm_in": 3.04,
+    "first_pcm_out": 3.04,
+    "reply_text": 3.165,
+    "satellite_first_pcm": 3.04
+   }
+  },
+  {
+   "run": 10,
+   "warm_up": false,
+   "clip": "three_times_three_enusguy.wav",
+   "latency_s": 3.013,
+   "transcript": "What is 3 times 3?",
+   "reply": "Nine.",
+   "stages": {
+    "endpoint": 0.285,
+    "captured": 0.685,
+    "dispatch": 0.689,
+    "transcript": 1.42,
+    "llm_start": 1.496,
+    "tts_begin": 3.012,
+    "first_pcm_in": 3.012,
+    "first_pcm_out": 3.012,
+    "reply_text": 3.15,
+    "satellite_first_pcm": 3.013
+   }
+  },
+  {
+   "run": 11,
+   "warm_up": false,
+   "clip": "wake_jarvis-math_enusaria.wav",
+   "latency_s": 3.269,
+   "transcript": "What's 2 plus 2?",
+   "reply": "Four.",
+   "stages": {
+    "endpoint": 0.299,
+    "captured": 0.699,
+    "dispatch": 0.705,
+    "transcript": 1.386,
+    "llm_start": 1.749,
+    "tts_begin": 3.268,
+    "first_pcm_in": 3.268,
+    "first_pcm_out": 3.268,
+    "reply_text": 3.383,
+    "satellite_first_pcm": 3.269
+   }
+  },
+  {
+   "run": 12,
+   "warm_up": false,
+   "clip": "three_times_three_enusguy.wav",
+   "latency_s": 3.228,
+   "transcript": "What is 3 times 3?",
+   "reply": "Nine.",
+   "stages": {
+    "endpoint": 0.294,
+    "captured": 0.694,
+    "dispatch": 0.697,
+    "transcript": 1.467,
+    "llm_start": 1.526,
+    "tts_begin": 3.227,
+    "first_pcm_in": 3.227,
+    "first_pcm_out": 3.227,
+    "reply_text": 3.334,
+    "satellite_first_pcm": 3.228
+   }
+  },
+  {
+   "run": 13,
+   "warm_up": false,
+   "clip": "wake_jarvis-math_enusaria.wav",
+   "latency_s": 2.933,
+   "transcript": "What's 2 plus 2?",
+   "reply": "Four.",
+   "stages": {
+    "endpoint": 0.281,
+    "captured": 0.681,
+    "dispatch": 0.684,
+    "transcript": 1.317,
+    "llm_start": 1.376,
+    "tts_begin": 2.933,
+    "first_pcm_in": 2.933,
+    "first_pcm_out": 2.933,
+    "reply_text": 3.08,
+    "satellite_first_pcm": 2.933
+   }
+  },
+  {
+   "run": 14,
+   "warm_up": false,
+   "clip": "three_times_three_enusguy.wav",
+   "latency_s": 3.108,
+   "transcript": "What is 3 times 3?",
+   "reply": "Nine.",
+   "stages": {
+    "endpoint": 0.286,
+    "captured": 0.686,
+    "dispatch": 0.69,
+    "transcript": 1.411,
+    "llm_start": 1.482,
+    "tts_begin": 3.107,
+    "first_pcm_in": 3.107,
+    "first_pcm_out": 3.108,
+    "reply_text": 3.236,
+    "satellite_first_pcm": 3.108
+   }
+  },
+  {
+   "run": 15,
+   "warm_up": false,
+   "clip": "wake_jarvis-math_enusaria.wav",
+   "latency_s": 3.142,
+   "transcript": "What's 2 plus 2?",
+   "reply": "Four.",
+   "stages": {
+    "endpoint": 0.295,
+    "captured": 0.695,
+    "dispatch": 0.698,
+    "transcript": 1.57,
+    "llm_start": 1.643,
+    "tts_begin": 3.141,
+    "first_pcm_in": 3.141,
+    "first_pcm_out": 3.141,
+    "reply_text": 3.256,
+    "satellite_first_pcm": 3.142
+   }
+  },
+  {
+   "run": 16,
+   "warm_up": false,
+   "clip": "three_times_three_enusguy.wav",
+   "latency_s": 2.82,
+   "transcript": "What is 3 times 3?",
+   "reply": "Nine.",
+   "stages": {
+    "endpoint": 0.297,
+    "captured": 0.697,
+    "dispatch": 0.7,
+    "transcript": 1.385,
+    "llm_start": 1.446,
+    "tts_begin": 2.819,
+    "first_pcm_in": 2.819,
+    "first_pcm_out": 2.82,
+    "reply_text": 2.958,
+    "satellite_first_pcm": 2.82
+   }
+  },
+  {
+   "run": 17,
+   "warm_up": false,
+   "clip": "wake_jarvis-math_enusaria.wav",
+   "latency_s": 3.026,
+   "transcript": "What's 2 plus 2?",
+   "reply": "Four.",
+   "stages": {
+    "endpoint": 0.267,
+    "captured": 0.667,
+    "dispatch": 0.67,
+    "transcript": 1.429,
+    "llm_start": 1.492,
+    "tts_begin": 3.024,
+    "first_pcm_in": 3.024,
+    "first_pcm_out": 3.025,
+    "reply_text": 3.137,
+    "satellite_first_pcm": 3.026
+   }
+  },
+  {
+   "run": 18,
+   "warm_up": false,
+   "clip": "three_times_three_enusguy.wav",
+   "latency_s": 3.105,
+   "transcript": "What is 3 times 3?",
+   "reply": "Nine.",
+   "stages": {
+    "endpoint": 0.279,
+    "captured": 0.679,
+    "dispatch": 0.682,
+    "transcript": 1.471,
+    "llm_start": 1.525,
+    "tts_begin": 3.104,
+    "first_pcm_in": 3.104,
+    "first_pcm_out": 3.104,
+    "reply_text": 3.214,
+    "satellite_first_pcm": 3.105
+   }
+  },
+  {
+   "run": 19,
+   "warm_up": false,
+   "clip": "wake_jarvis-math_enusaria.wav",
+   "latency_s": 3.166,
+   "transcript": "What's 2 plus 2?",
+   "reply": "Four.",
+   "stages": {
+    "endpoint": 0.291,
+    "captured": 0.691,
+    "dispatch": 0.694,
+    "transcript": 1.462,
+    "llm_start": 1.514,
+    "tts_begin": 3.165,
+    "first_pcm_in": 3.165,
+    "first_pcm_out": 3.166,
+    "reply_text": 3.284,
+    "satellite_first_pcm": 3.166
+   }
+  },
+  {
+   "run": 20,
+   "warm_up": false,
+   "clip": "three_times_three_enusguy.wav",
+   "latency_s": 3.138,
+   "transcript": "What is 3 times 3?",
+   "reply": "Nine.",
+   "stages": {
+    "endpoint": 0.294,
+    "captured": 0.694,
+    "dispatch": 0.697,
+    "transcript": 1.407,
+    "llm_start": 1.484,
+    "tts_begin": 3.136,
+    "first_pcm_in": 3.136,
+    "first_pcm_out": 3.137,
+    "reply_text": 3.286,
+    "satellite_first_pcm": 3.138
+   }
+  },
+  {
+   "run": 21,
+   "warm_up": false,
+   "clip": "wake_jarvis-math_enusaria.wav",
+   "latency_s": 3.085,
+   "transcript": "What's 2 plus 2?",
+   "reply": "Four.",
+   "stages": {
+    "endpoint": 0.28,
+    "captured": 0.68,
+    "dispatch": 0.684,
+    "transcript": 1.438,
+    "llm_start": 1.501,
+    "tts_begin": 3.084,
+    "first_pcm_in": 3.084,
+    "first_pcm_out": 3.085,
+    "reply_text": 3.191,
+    "satellite_first_pcm": 3.085
+   }
+  }
+ ]
+}

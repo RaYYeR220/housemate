@@ -1,0 +1,66 @@
+{
+ "environment": {
+  "date": "2026-11-08T21:22:05+00:00",
+  "hermes_version": "0.23.0",
+  "python": "3.14.3",
+  "settings": {
+   "llm": {
+    "provider": "custom",
+    "model": "fast-hosted-model",
+    "host": "api.venice.ai"
+   },
+   "stt": {
+    "provider": "local",
+    "language": "en",
+    "model": "small",
+    "device": "cuda",
+    "compute_type": "float16",
+    "vad": true
+   },
+   "tts": {
+    "provider": "housemate-piper",
+    "voice": "en_US-lessac-medium",
+    "streaming": {
+     "min_len": 20
+    }
+   },
+   "housemate": {
+    "end_silence_ms": 700,
+    "wake_model": "hey_jarvis",
+    "wake_threshold": 0.5,
+    "vad": "silero",
+    "conversation": "household"
+   }
+  },
+  "hardware": {
+   "os": "Windows-11-10.0.26300-SP0",
+   "cpu": "AMD Ryzen 5 5600X 6-Core Processor",
+   "cores": 12,
+   "gpu": "NVIDIA GeForce RTX 4060, 8188 MiB"
+  }
+ },
+ "runs": [
+  {
+   "python": "3.14.3",
+   "real_hermes": true,
+   "command": "pytest -q -m 'not slow'",
+   "passed": 364,
+   "failed": 0,
+   "skipped": 0,
+   "deselected": 4,
+   "errors": 0,
+   "summary": "364 passed, 4 deselected in 27.78s"
+  },
+  {
+   "python": "3.11.1",
+   "real_hermes": false,
+   "command": "pytest -q -m 'not slow'",
+   "passed": 357,
+   "failed": 0,
+   "skipped": 7,
+   "deselected": 4,
+   "errors": 0,
+   "summary": "357 passed, 7 skipped, 4 deselected in 20.80s"
+  }
+ ]
+}

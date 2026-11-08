@@ -1,0 +1,389 @@
+{
+ "environment": {
+  "date": "2026-11-08T20:16:47+00:00",
+  "hermes_version": "0.23.0",
+  "python": "3.14.3",
+  "settings": {
+   "llm": {
+    "provider": "custom",
+    "model": "fast-hosted-model",
+    "host": "api.venice.ai"
+   },
+   "stt": {
+    "provider": "local",
+    "language": "en",
+    "model": "small",
+    "device": "cuda",
+    "compute_type": "float16",
+    "vad": true
+   },
+   "tts": {
+    "provider": "cloud",
+    "model": "tts-kokoro",
+    "voice": "af_sky",
+    "pcm_sample_rate": 24000,
+    "host": "api.venice.ai",
+    "streaming": {
+     "min_len": 20
+    }
+   },
+   "housemate": {
+    "end_silence_ms": 700,
+    "wake_model": "hey_jarvis",
+    "wake_threshold": 0.5,
+    "vad": "silero",
+    "conversation": "household"
+   }
+  },
+  "hardware": {
+   "os": "Windows-11-10.0.26300-SP0",
+   "cpu": "AMD Ryzen 5 5600X 6-Core Processor",
+   "cores": 12,
+   "gpu": "NVIDIA GeForce RTX 4060, 8188 MiB"
+  }
+ },
+ "wake_model": "hey_jarvis",
+ "threshold": 0.5,
+ "refractory_s": 1.0,
+ "positives": {
+  "clean": {
+   "n": 57,
+   "detected": 57,
+   "recall": 1.0
+  },
+  "speech_10db": {
+   "n": 57,
+   "detected": 51,
+   "recall": 0.8947
+  },
+  "sources": "tests/fixtures/wake_*.wav (ElevenLabs + Edge voices) + Edge neural voices made by bench/corpus.py make_positives (see bench/corpus.md)",
+  "files": [
+   {
+    "file": "wake_jarvis-math_enusaria.wav",
+    "clean": 0.9992,
+    "speech_10db": 0.9993
+   },
+   {
+    "file": "wake_jarvis_engbsonia.wav",
+    "clean": 0.9969,
+    "speech_10db": 0.7817
+   },
+   {
+    "file": "wake_jarvis_enieconnor.wav",
+    "clean": 0.9984,
+    "speech_10db": 0.9955
+   },
+   {
+    "file": "wake_jarvis_eninneerja.wav",
+    "clean": 0.8418,
+    "speech_10db": 0.9987
+   },
+   {
+    "file": "wake_jarvis_ennzmolly.wav",
+    "clean": 0.9981,
+    "speech_10db": 0.9979
+   },
+   {
+    "file": "wake_jarvis_enusguy.wav",
+    "clean": 0.9988,
+    "speech_10db": 0.9992
+   },
+   {
+    "file": "wake_jarvis_george.wav",
+    "clean": 0.9982,
+    "speech_10db": 0.9972
+   },
+   {
+    "file": "wake_jarvis_jessica.wav",
+    "clean": 0.9989,
+    "speech_10db": 0.9955
+   },
+   {
+    "file": "wake_jarvis_roger.wav",
+    "clean": 0.9984,
+    "speech_10db": 0.9991
+   },
+   {
+    "file": "wake_jarvis_sarah.wav",
+    "clean": 0.9989,
+    "speech_10db": 0.9996
+   },
+   {
+    "file": "wake0_en-AU-NatashaNeural.wav",
+    "clean": 0.9974,
+    "speech_10db": 0.9975
+   },
+   {
+    "file": "wake0_en-AU-WilliamNeural.wav",
+    "clean": 0.995,
+    "speech_10db": 0.9962
+   },
+   {
+    "file": "wake0_en-CA-ClaraNeural.wav",
+    "clean": 0.9985,
+    "speech_10db": 0.9989
+   },
+   {
+    "file": "wake0_en-CA-LiamNeural.wav",
+    "clean": 0.9983,
+    "speech_10db": 0.9978
+   },
+   {
+    "file": "wake0_en-GB-LibbyNeural.wav",
+    "clean": 0.9984,
+    "speech_10db": 0.9984
+   },
+   {
+    "file": "wake0_en-GB-MaisieNeural.wav",
+    "clean": 0.9975,
+    "speech_10db": 0.9982
+   },
+   {
+    "file": "wake0_en-GB-RyanNeural.wav",
+    "clean": 0.9949,
+    "speech_10db": 0.1351
+   },
+   {
+    "file": "wake0_en-GB-ThomasNeural.wav",
+    "clean": 0.9988,
+    "speech_10db": 0.9983
+   },
+   {
+    "file": "wake0_en-IE-EmilyNeural.wav",
+    "clean": 0.9948,
+    "speech_10db": 0.9127
+   },
+   {
+    "file": "wake0_en-IN-NeerjaNeural.wav",
+    "clean": 0.7596,
+    "speech_10db": 0.5439
+   },
+   {
+    "file": "wake0_en-IN-PrabhatNeural.wav",
+    "clean": 0.9958,
+    "speech_10db": 0.9807
+   },
+   {
+    "file": "wake0_en-NZ-MitchellNeural.wav",
+    "clean": 0.9967,
+    "speech_10db": 0.9935
+   },
+   {
+    "file": "wake0_en-PH-RosaNeural.wav",
+    "clean": 0.9962,
+    "speech_10db": 0.9949
+   },
+   {
+    "file": "wake0_en-SG-WayneNeural.wav",
+    "clean": 0.991,
+    "speech_10db": 0.9586
+   },
+   {
+    "file": "wake0_en-US-AriaNeural.wav",
+    "clean": 0.9989,
+    "speech_10db": 0.9995
+   },
+   {
+    "file": "wake0_en-US-ChristopherNeural.wav",
+    "clean": 0.9985,
+    "speech_10db": 0.9969
+   },
+   {
+    "file": "wake0_en-US-EricNeural.wav",
+    "clean": 0.9983,
+    "speech_10db": 0.9991
+   },
+   {
+    "file": "wake0_en-US-GuyNeural.wav",
+    "clean": 0.9989,
+    "speech_10db": 0.9984
+   },
+   {
+    "file": "wake0_en-US-JennyNeural.wav",
+    "clean": 0.9988,
+    "speech_10db": 0.9987
+   },
+   {
+    "file": "wake0_en-US-MichelleNeural.wav",
+    "clean": 0.9985,
+    "speech_10db": 0.9971
+   },
+   {
+    "file": "wake0_en-US-RogerNeural.wav",
+    "clean": 0.9975,
+    "speech_10db": 0.9991
+   },
+   {
+    "file": "wake0_en-US-SteffanNeural.wav",
+    "clean": 0.9984,
+    "speech_10db": 0.9986
+   },
+   {
+    "file": "wake0_en-ZA-LeahNeural.wav",
+    "clean": 0.9959,
+    "speech_10db": 0.9914
+   },
+   {
+    "file": "wake0_en-ZA-LukeNeural.wav",
+    "clean": 0.9918,
+    "speech_10db": 0.9953
+   },
+   {
+    "file": "wake1_en-AU-NatashaNeural.wav",
+    "clean": 0.9971,
+    "speech_10db": 0.9955
+   },
+   {
+    "file": "wake1_en-CA-ClaraNeural.wav",
+    "clean": 0.9989,
+    "speech_10db": 0.9987
+   },
+   {
+    "file": "wake1_en-CA-LiamNeural.wav",
+    "clean": 0.9988,
+    "speech_10db": 0.9984
+   },
+   {
+    "file": "wake1_en-GB-LibbyNeural.wav",
+    "clean": 0.9984,
+    "speech_10db": 0.998
+   },
+   {
+    "file": "wake1_en-GB-MaisieNeural.wav",
+    "clean": 0.999,
+    "speech_10db": 0.9991
+   },
+   {
+    "file": "wake1_en-GB-RyanNeural.wav",
+    "clean": 0.9982,
+    "speech_10db": 0.9219
+   },
+   {
+    "file": "wake1_en-GB-ThomasNeural.wav",
+    "clean": 0.9993,
+    "speech_10db": 0.9985
+   },
+   {
+    "file": "wake1_en-IE-EmilyNeural.wav",
+    "clean": 0.9888,
+    "speech_10db": 0.9783
+   },
+   {
+    "file": "wake1_en-IN-NeerjaNeural.wav",
+    "clean": 0.9848,
+    "speech_10db": 0.8495
+   },
+   {
+    "file": "wake1_en-IN-PrabhatNeural.wav",
+    "clean": 0.9993,
+    "speech_10db": 0.4624
+   },
+   {
+    "file": "wake1_en-NZ-MitchellNeural.wav",
+    "clean": 0.9649,
+    "speech_10db": 0.9924
+   },
+   {
+    "file": "wake1_en-PH-RosaNeural.wav",
+    "clean": 0.9981,
+    "speech_10db": 0.9973
+   },
+   {
+    "file": "wake1_en-SG-WayneNeural.wav",
+    "clean": 0.9854,
+    "speech_10db": 0.3373
+   },
+   {
+    "file": "wake1_en-US-AriaNeural.wav",
+    "clean": 0.9991,
+    "speech_10db": 0.3092
+   },
+   {
+    "file": "wake1_en-US-ChristopherNeural.wav",
+    "clean": 0.9983,
+    "speech_10db": 0.994
+   },
+   {
+    "file": "wake1_en-US-EricNeural.wav",
+    "clean": 0.9984,
+    "speech_10db": 0.9986
+   },
+   {
+    "file": "wake1_en-US-GuyNeural.wav",
+    "clean": 0.9981,
+    "speech_10db": 0.9991
+   },
+   {
+    "file": "wake1_en-US-JennyNeural.wav",
+    "clean": 0.999,
+    "speech_10db": 0.999
+   },
+   {
+    "file": "wake1_en-US-MichelleNeural.wav",
+    "clean": 0.9983,
+    "speech_10db": 0.9066
+   },
+   {
+    "file": "wake1_en-US-RogerNeural.wav",
+    "clean": 0.9984,
+    "speech_10db": 0.9974
+   },
+   {
+    "file": "wake1_en-US-SteffanNeural.wav",
+    "clean": 0.9982,
+    "speech_10db": 0.9987
+   },
+   {
+    "file": "wake1_en-ZA-LeahNeural.wav",
+    "clean": 0.9954,
+    "speech_10db": 0.4727
+   },
+   {
+    "file": "wake1_en-ZA-LukeNeural.wav",
+    "clean": 0.9942,
+    "speech_10db": 0.4924
+   }
+  ]
+ },
+ "near_misses": {
+  "n": 5,
+  "fired": 0,
+  "files": [
+   {
+    "file": "neg_harvest_engbthomas.wav",
+    "score": 0.0001
+   },
+   {
+    "file": "neg_hey-davis_encaliam.wav",
+    "score": 0.0001
+   },
+   {
+    "file": "neg_hey-marvin_enussteffan.wav",
+    "score": 0.004
+   },
+   {
+    "file": "neg_hey-there_enusguy.wav",
+    "score": 0.0001
+   },
+   {
+    "file": "neg_jars-of-jam_enusandrew.wav",
+    "score": 0.0031
+   }
+  ]
+ },
+ "negatives": {
+  "source": "https://archive.org/download/shortstorycollection062_1512_librivox/",
+  "licence": "Public domain (LibriVox recordings; archive.org Public Domain Mark 1.0)",
+  "files": 20,
+  "hours": 9.21,
+  "false_accepts": 1,
+  "fa_per_hour": 0.1085,
+  "events": [
+   {
+    "file": "shortstory062_02_smudge_64kb.mp3",
+    "at_s": 857.68
+   }
+  ]
+ },
+ "seconds_to_run": 519.9
+}
