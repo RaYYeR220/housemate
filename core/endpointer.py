@@ -7,6 +7,8 @@ the rest of that talk is ignored until the next silence gap.
 
 The endpointer is fed every frame (so the VAD state and the preroll stay warm); the
 listener decides which utterances it wants and calls ``restart()`` when a capture begins.
+A wake-word capture restarts with ``keep_preroll=False`` (and a few ms skipped), so the clip
+starts after the wake word instead of 300 ms before it.
 """
 
 from __future__ import annotations
@@ -59,6 +61,7 @@ class Endpointer:
         self.last_prob = 0.0
         self._clear_segment()
         self._cooldown = False
+        self._skip = 0  # frames to drop entirely after a restart (VAD still runs)
 
     # --- state -------------------------------------------------------------------------
 
@@ -83,21 +86,28 @@ class Endpointer:
         self._silence = 0  # consecutive non-speech frames
         self._last_speech = 0  # segment length right after the newest speech frame
 
-    def restart(self) -> None:
-        """Drop the current segment (and any post-truncation wait); keep preroll + VAD state.
+    def restart(self, *, keep_preroll: bool = True, skip_ms: int = 0) -> None:
+        """Drop the current segment (and any post-truncation wait); keep the VAD state.
 
-        The next speech frame starts a fresh segment, with the most recent audio as preroll.
+        The next speech frame starts a fresh segment. With ``keep_preroll`` (follow-ups,
+        tap-to-talk) the most recent audio is its preroll. Without it, nothing heard before
+        this call can reach the next utterance, and the next ``skip_ms`` of audio are dropped
+        as well: a wake-word capture starts after the wake word, not 300 ms before it.
         """
-        if self._seg is not None and self._pre.maxlen:
+        if not keep_preroll:
+            self._pre.clear()
+        elif self._seg is not None and self._pre.maxlen:
             self._pre.extend(self._seg[-self._pre.maxlen :])
         self._clear_segment()
         self._cooldown = False
+        self._skip = max(0, math.ceil(skip_ms / FRAME_MS)) if not keep_preroll else 0
 
     def reset(self) -> None:
         """Forget everything, including the VAD's recurrent state and the preroll."""
         self._pre.clear()
         self._clear_segment()
         self._cooldown = False
+        self._skip = 0
         reset = getattr(self.vad, "reset", None)
         if callable(reset):
             reset()
@@ -109,6 +119,10 @@ class Endpointer:
         prob = float(self.vad.speech_prob(frame))
         self.last_prob = prob
         speech = prob >= self.speech_threshold
+
+        if self._skip:  # just after a wake word: this audio belongs to the wake phrase
+            self._skip -= 1
+            return None
 
         if self._cooldown:  # after truncation: wait for the talk to pause before re-arming
             self._silence = 0 if speech else self._silence + 1

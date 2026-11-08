@@ -113,6 +113,44 @@ def test_restart_drops_segment_but_keeps_preroll():
     assert got[0].pcm.startswith(b"".join(frame(t) for t in range(36, 51)))
 
 
+def test_restart_without_preroll_starts_after_the_restart_point():
+    # 20 frames of the wake word, a restart at its end, a short pause, then the command
+    vad = ScriptedVad([0.9] * 20 + [0.1] * 5 + [0.9] * 30 + [0.1] * 40)
+    ep = Endpointer(vad)
+    assert run(ep, 20, tag_start=1) == []
+    ep.restart(keep_preroll=False, skip_ms=40)
+    got = run(ep, 75, tag_start=21)
+    assert len(got) == 1
+    utt = got[0][1]
+    # nothing from before the restart, and the 2 skipped frames (40 ms) are gone too:
+    # preroll = the 3 remaining pause frames, then 30 speech frames + 300 ms tail
+    assert utt.pcm.startswith(frame(23))
+    assert len(utt.pcm) == (3 + 30 + 15) * FRAME_BYTES
+
+
+def test_restart_without_preroll_while_speech_runs_on():
+    # the command follows the wake word with no pause: the clip starts right after the skip
+    vad = ScriptedVad([0.9] * 20 + [0.9] * 30 + [0.1] * 40)
+    ep = Endpointer(vad)
+    run(ep, 20, tag_start=1)
+    ep.restart(keep_preroll=False, skip_ms=40)
+    got = run(ep, 70, tag_start=21)
+    assert len(got) == 1
+    assert got[0][1].pcm.startswith(frame(23))
+    assert len(got[0][1].pcm) == (28 + 15) * FRAME_BYTES
+
+
+def test_plain_restart_cancels_a_pending_skip():
+    vad = ScriptedVad([0.9] * 20 + [0.0] * 20 + [0.9] * 20 + [0.0] * 40)
+    ep = Endpointer(vad)
+    run(ep, 20, tag_start=1)
+    ep.restart(keep_preroll=False, skip_ms=400)
+    ep.restart()  # e.g. a follow-up window opened: back to the normal preroll
+    got = run(ep, 80, tag_start=21)
+    assert len(got) == 1
+    assert got[0][1].pcm.startswith(b"".join(frame(t) for t in range(26, 41)))
+
+
 def test_pcm_to_wav_header():
     pcm = frame(5) * 3
     wav = pcm_to_wav(pcm)

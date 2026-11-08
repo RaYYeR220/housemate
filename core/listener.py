@@ -10,7 +10,9 @@ and ``dispatch=lambda fn: fn()`` to run everything synchronously.
 Triggers:
 - ``wake``: the wake score crosses the threshold (``threshold + echo_margin`` while any
   device in the earshot group plays), the device offers itself to the ``WakeArbiter`` and
-  starts capturing; if it loses the round the capture is dropped silently.
+  starts capturing; if it loses the round the capture is dropped silently. The clip starts
+  ``wake_trim_ms`` after the detection point with no preroll, so the end of the wake word
+  never reaches speech-to-text (it used to come back as "service, what's ...").
 - ``followup``: within ``open_followup(seconds)`` speech is captured without a wake word,
   except while any device in the earshot group is playing (echo guard).
 - ``ptt``: tap-to-talk captures everything between ``set_ptt(True)`` and ``set_ptt(False)``.
@@ -90,6 +92,7 @@ class DeviceListener:
         wake_listen_s: float = 5.0,
         refractory_s: float = 1.0,
         max_queue_s: float = 5.0,
+        wake_trim_ms: int = 40,
     ) -> None:
         self.device_id = device_id
         self.wake = wake
@@ -97,6 +100,7 @@ class DeviceListener:
         self.arbiter = arbiter
         self.threshold = float(threshold)
         self.echo_margin = echo_margin
+        self.wake_trim_ms = max(0, int(wake_trim_ms))
         self.room = room
         self.group = group
         self._executor = executor
@@ -350,7 +354,9 @@ class DeviceListener:
         room, group = self._earshot()
         self.arbiter.offer(self.device_id, room, group, score, energy, at=t)
         self.stats["offers"] += 1
-        self.endpointer.restart()
+        # The score crosses the threshold near the end of the wake word: keep everything
+        # before that point (and a few ms after it) out of the command clip.
+        self.endpointer.restart(keep_preroll=False, skip_ms=self.wake_trim_ms)
         self._state = _PENDING
         self._since = self._n
         self._pending_utt = None

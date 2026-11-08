@@ -111,6 +111,45 @@ def test_wake_then_command_emits_one_wake_utterance():
     assert len(utt.pcm) >= 40 * FRAME_BYTES
 
 
+def levels(pcm: bytes) -> list[int]:
+    """The ``level`` tag of every frame in ``pcm`` (sample 2 of each scripted frame)."""
+    return [struct.unpack_from("<h", pcm, i + 4)[0] for i in range(0, len(pcm), FRAME_BYTES)]
+
+
+def test_wake_capture_starts_after_the_wake_word():
+    rig = Rig()
+    phone = rig.listener("phone", "kitchen")
+    # level tags: 5 = room before, 11 = the wake phrase, 22 = the pause, 33 = the command
+    rig.feed({phone: silence(20, level=5) + wake_phrase(0.99, level=11) + silence(6, level=22)
+              + speech(40, level=33) + silence(40)})
+    assert rig.kinds() == [("phone", "wake")]
+    tags = levels(rig.got[0][1].pcm)
+    assert 11 not in tags and 5 not in tags  # no wake-word residue in the clip
+    # 40 ms after the detection point are skipped, the rest of the pause is the preroll
+    assert tags[:4] == [22, 22, 22, 22] and tags[4] == 33
+    assert tags.count(33) == 40
+
+
+def test_wake_capture_when_the_command_runs_on():
+    rig = Rig()
+    phone = rig.listener("phone", "kitchen")
+    rig.feed({phone: silence(20) + wake_phrase(0.99, level=11) + speech(40, level=33) + silence(40)})
+    assert rig.kinds() == [("phone", "wake")]
+    tags = levels(rig.got[0][1].pcm)
+    assert 11 not in tags
+    assert tags[0] == 33 and tags.count(33) == 38  # starts 40 ms after the detection point
+
+
+def test_followup_capture_keeps_its_preroll():
+    rig = Rig()
+    phone = rig.listener("phone", "kitchen")
+    phone.open_followup(6.0)
+    rig.feed({phone: silence(30, level=7) + speech(30, level=9) + silence(40)})
+    assert rig.kinds() == [("phone", "followup")]
+    tags = levels(rig.got[0][1].pcm)
+    assert tags[:15] == [7] * 15 and tags[15] == 9  # 300 ms of preroll before the first word
+
+
 def test_speech_without_wake_or_window_is_ignored():
     rig = Rig()
     phone = rig.listener("phone", "kitchen")
