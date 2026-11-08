@@ -25,6 +25,8 @@ import contextlib
 import json
 import logging
 import os
+import re
+import socket
 import time
 import uuid
 from collections import deque
@@ -50,6 +52,7 @@ from .core.audio import pcm_to_wav
 from .core.config import HousemateConfig
 from .core.intents import is_skip, is_stop, parse_choice, parse_yes_no, spoken_label
 from .core.playout import PcmRealigner, Playout
+from .core.protocol import SAMPLE_RATE as MIC_RATE
 from .core.router import HOUSEHOLD_CHAT, SessionRouter
 from .core.store import slugify
 
@@ -76,7 +79,18 @@ STOP_ANSWER_TTL_S = 200.0
 PLAYBACK_GRACE_S = 3.0
 RECENT_TURN_S = 60.0
 MAX_REPROMPTS = 2
+INTERCOM_WINDOW_S = 8.0  # after a tap on another room: start talking within this, it plays there
+INTERCOM_TTL_S = INTERCOM_WINDOW_S + 17.0  # window + the longest utterance + endpointing
 TURN_LOG_SIZE = 100  # finished turns whose stage times the control API reports
+
+
+def wake_phrase(model: str) -> str:
+    """The wake model's name as people say it: "hey_jarvis" / "hey_jarvis_v0.1.onnx" -> "Hey Jarvis"."""
+    name = str(model or "").replace("\\", "/").rsplit("/", 1)[-1]
+    if name.lower().endswith(".onnx"):
+        name = name[:-5]
+    name = re.sub(r"_v\d+(?:\.\d+)*$", "", name)
+    return " ".join(w.capitalize() for w in re.split(r"[_\-\s]+", name) if w)[:64]
 
 
 # --- small records -------------------------------------------------------------------------------
@@ -133,6 +147,9 @@ class _Prompt:
     request_id: str | None = None
     tries: int = 0
     skippable: bool = False  # a clarify question the user may skip ("Or say skip.")
+    title: str = ""  # approval card: the short question, what it is, the command itself
+    detail: str = ""
+    command: str = ""
 
 
 class _ReplyHandle(StreamingTTSHandle):
@@ -205,6 +222,7 @@ class HousemateAdapter(BasePlatformAdapter):
         self._captions: dict[str, deque] = {}
         self._prompts: dict[str, _Prompt] = {}
         self._idle_timers: dict[str, asyncio.TimerHandle] = {}
+        self._intercom: dict[str, tuple[str, float]] = {}  # device -> (target room, until): next utterance plays there
         self._states: dict[str, str] = {}  # last state asked of each device
         self._timings: dict[str, dict[str, float]] = {}
         self._turn_log: deque[dict] = deque(maxlen=TURN_LOG_SIZE)  # finished turns, for the bench
@@ -244,6 +262,7 @@ class HousemateAdapter(BasePlatformAdapter):
                 cert, key, self.fingerprint = await asyncio.to_thread(ensure_self_signed_cert, data_dir, lan_hosts())
             hub = Hub(store, registry, host=self.cfg.bind_host, port=self.cfg.port, cert=cert, key=key,
                       web_root=WEB_ROOT, tls=self.cfg.tls)
+            hub.info = self._satellite_info
             await hub.start()
         except HubPortInUse as exc:
             log.error("housemate: %s", exc)
@@ -444,6 +463,7 @@ class HousemateAdapter(BasePlatformAdapter):
 
     def _on_wake(self, device_id: str) -> None:
         """A device won a wake round: stop what it plays (barge-in), stop a ring, listen."""
+        self._intercom.pop(device_id, None)
         room = self._device_room(device_id)
         if room and self.timers is not None and self.timers.is_ringing(room):
             self.timers.stop_ringing(room)
@@ -471,6 +491,11 @@ class HousemateAdapter(BasePlatformAdapter):
             log.debug("housemate: utterance from %s ignored (no room yet)", device_id)
             return
         self._cancel_idle(device_id)
+        intercom = self._intercom.pop(device_id, None)
+        if intercom is not None and kind == "followup" and time.monotonic() < intercom[1]:
+            self._set_state(device_id, "thinking")
+            self._spawn(self._deliver_intercom(device_id, room, intercom[0], bytes(utt.pcm)))
+            return
         pending = self.book.for_device(device_id)
         if pending is not None:
             self._set_state(device_id, "thinking")
@@ -612,6 +637,7 @@ class HousemateAdapter(BasePlatformAdapter):
             self._spawn(self._push_timers(device_id))
         elif mtype == "ptt":
             listener = self.listeners.get(device_id)
+            self._intercom.pop(device_id, None)
             if msg.get("on"):
                 self._barge_in(device_id)
                 self._set_state(device_id, "listening")
@@ -673,6 +699,7 @@ class HousemateAdapter(BasePlatformAdapter):
     def _on_disconnect(self, device_id: str) -> None:
         self._refresh_allowlist()  # a revoked device loses access at once
         self._states.pop(device_id, None)
+        self._intercom.pop(device_id, None)
         listener = self.listeners.pop(device_id, None)
         if listener is not None:
             listener.close()
@@ -694,6 +721,9 @@ class HousemateAdapter(BasePlatformAdapter):
             if room and self.timers is not None:
                 self.timers.stop_ringing(room)
             return
+        if kind == "intercom":
+            self._start_intercom(device_id, ident or str(value or ""))
+            return
         if kind in ("approve", "deny"):
             kind, value = "prompt", kind
         if kind != "prompt":
@@ -714,6 +744,55 @@ class HousemateAdapter(BasePlatformAdapter):
                 pick = prompt.choices[value - 1]
             if pick is not None:
                 self._apply_clarify(prompt, pick, via="tap")
+
+    def _satellite_info(self) -> dict:
+        """What a satellite shows besides its room (sent with ``paired``): the wake phrase of the model
+        that is really loaded, the conversation mode, this computer's name."""
+        model = self.models.wake_model if self.models is not None else self.cfg.wake_model
+        return {"wake": wake_phrase(model), "conversation": getattr(self.router, "mode", self.cfg.conversation),
+                "hub_name": socket.gethostname()[:64]}
+
+    # ======================================================================== intercom
+
+    def _start_intercom(self, device_id: str, target: str) -> None:
+        """A tap on another room on the satellite: what this device hears next (no wake word, a few
+        seconds to start) is played in that room as a voice message. Nothing goes to Hermes."""
+        room = self._device_room(device_id)
+        if room is None:
+            return
+        found = None
+        with contextlib.suppress(Exception):
+            found = self.store.get_room(target) if target else None
+        if found is None or found.slug == room:
+            self._spawn(self._send(device_id, {"type": "caption", "role": "status",
+                                               "text": f"There is no other room called {target[:40] or 'that'}."}))
+            return
+        listener = self.listeners.get(device_id)
+        if listener is None:
+            self._spawn(self._send(device_id, {"type": "caption", "role": "status",
+                                               "text": "Still starting up. Try again in a moment."}))
+            return
+        self._intercom[device_id] = (found.slug, time.monotonic() + INTERCOM_TTL_S)
+        self._barge_in(device_id)
+        listener.open_followup(INTERCOM_WINDOW_S)
+        self._set_state(device_id, "listening")
+        self._idle_later(device_id, INTERCOM_WINDOW_S + 1.0)
+
+    async def _deliver_intercom(self, device_id: str, room: str, target: str, pcm: bytes) -> None:
+        to_name, from_name = self._room_name(target), self._room_name(room)
+        sent: list[str] = []
+        try:
+            sent = await self.announcer.voice_message(target, pcm, MIC_RATE, from_name)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("housemate: playing the voice message in %s failed", target)
+        log.info("housemate: intercom %s -> %s (%.1f s, %d device(s))", room, target,
+                 len(pcm) / (2 * MIC_RATE), len(sent))
+        note = f"Sent to the {to_name}." if sent else f"No speaker is on in the {to_name}."
+        await self._send(device_id, {"type": "caption", "role": "status", "text": note})
+        if device_id not in self._playing:
+            self._set_state(device_id, "idle")
 
     # ======================================================================== outbound text
 
@@ -1094,7 +1173,8 @@ class HousemateAdapter(BasePlatformAdapter):
         what = " ".join(str(prompt.description or "").split()) or "run a command"
         question = f"I need your OK to run a command: {what}. Say approve, or deny."
         entry = _Prompt("approval", card_id, chat_id, prompt.session_key, room, device_id, question,
-                        ["Approve", "Deny"], request_id=prompt.request_id)
+                        ["Approve", "Deny"], request_id=prompt.request_id, title="Run a command?",
+                        detail=what, command=" ".join(str(prompt.command or "").split())[:400])
         self._prompts[card_id] = entry
         if not await self._show_prompt(entry):
             self._prompts.pop(card_id, None)
@@ -1134,8 +1214,12 @@ class HousemateAdapter(BasePlatformAdapter):
             self._retire_prompt(prompt, _plain(notice))
 
     def _prompt_msg(self, prompt: _Prompt) -> dict:
-        return {"type": "prompt", "kind": prompt.kind, "id": prompt.id, "text": prompt.question,
-                "choices": list(prompt.choices)}
+        msg = {"type": "prompt", "kind": prompt.kind, "id": prompt.id, "text": prompt.question,
+               "choices": list(prompt.choices)}
+        for name in ("title", "detail", "command"):  # extra fields for the satellite's card
+            if getattr(prompt, name):
+                msg[name] = getattr(prompt, name)
+        return msg
 
     async def _show_prompt(self, prompt: _Prompt) -> bool:
         if not prompt.room:
