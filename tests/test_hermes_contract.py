@@ -42,6 +42,9 @@ class Ctx:
     def register_skill(self, *a, **k):
         pass
 
+    def register_tts_provider(self, provider):
+        self.tts = provider
+
 
 def test_adapter_subclasses_the_real_base_and_renders_approvals():
     import adapter_kit  # noqa: F401  (registers the platform name)
@@ -66,6 +69,15 @@ def test_registration_matches_real_platform_entry_and_manifest():
     manifest = yaml.safe_load((ROOT / "plugin.yaml").read_text(encoding="utf-8"))
     assert sorted(ctx.hooks) == sorted(manifest["provides_hooks"]) == ["pre_llm_call"]
     assert ctx.hooks["pre_llm_call"](platform="telegram", user_message="hi") is None
+
+
+def test_streaming_piper_registers_as_a_real_tts_provider():
+    import housemate
+    from agent.tts_provider import TTSProvider
+
+    ctx = Ctx()
+    housemate.register(ctx)
+    assert isinstance(ctx.tts, TTSProvider) and ctx.tts.name == "housemate-piper" and ctx.tts.streams_pcm
 
 
 def test_only_public_hermes_surfaces():

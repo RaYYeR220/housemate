@@ -78,6 +78,19 @@ def register(ctx) -> None:
         pass
     ctx.register_platform(**kwargs)
 
+    # Optional streamed local voice (tts.provider: housemate-piper): Hermes's own Piper provider
+    # writes whole files, which the gateway can only play once the turn is over.
+    register_tts = getattr(ctx, "register_tts_provider", None)
+    if callable(register_tts):
+        try:
+            from .core.tts_piper import make_provider
+
+            register_tts(make_provider())
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).warning("housemate: registering the streamed Piper voice failed", exc_info=True)
+
     # Spoken answers to approvals / clarify prompts / ringing timers arrive in a side chat; this
     # hook applies them and vetoes that side turn (see core/answers.py). Gateway-only, cheap.
     register_hook = getattr(ctx, "register_hook", None)
