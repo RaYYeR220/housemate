@@ -51,7 +51,7 @@ from .core.arbiter import WakeArbiter
 from .core.audio import pcm_to_wav
 from .core.config import HousemateConfig
 from .core.desk import DeskFeed, DeskLog, desk_state, persist_mode
-from .core.intents import is_skip, is_stop, parse_choice, parse_yes_no, spoken_label
+from .core.intents import is_skip, is_stop, normalize, parse_choice, parse_yes_no, spoken_label
 from .core.playout import PcmRealigner, Playout
 from .core.protocol import SAMPLE_RATE as MIC_RATE
 from .core.router import HOUSEHOLD_CHAT, SessionRouter
@@ -83,6 +83,11 @@ MAX_REPROMPTS = 2
 INTERCOM_WINDOW_S = 8.0  # after a tap on another room: start talking within this, it plays there
 INTERCOM_TTL_S = INTERCOM_WINDOW_S + 17.0  # window + the longest utterance + endpointing
 TURN_LOG_SIZE = 100  # finished turns whose stage times the control API reports
+# A spoken approval or clarify answer is taken only from a clip that began this long after the last
+# sound any Housemate device played (and while none plays): never from our own audio.
+ECHO_TAIL_S = 1.0
+CHIME_S = 1.5  # a satellite chime, counted as playback (it is played on the device, not streamed)
+ANNOUNCED_TTL_S = 600.0  # what we announced this recently is never an approval answer
 
 
 def wake_phrase(model: str) -> str:
@@ -151,6 +156,10 @@ class _Prompt:
     title: str = ""  # approval card: the short question, what it is, the command itself
     detail: str = ""
     command: str = ""
+    spoken: str = ""  # what is said when the prompt comes up
+    smart_denied: bool = False  # Hermes's smart approval flagged the command: tap only
+    presented: bool = False  # shown (and spoken, armed): the first open prompt of its room
+    shown_to: set[str] = field(default_factory=set)  # devices that got the card: only they may tap
 
 
 class _ReplyHandle(StreamingTTSHandle):
@@ -225,6 +234,8 @@ class HousemateAdapter(BasePlatformAdapter):
         self._loop: asyncio.AbstractEventLoop | None = None
         self._streams: dict[str, _Stream] = {}
         self._playing: dict[str, _Playing] = {}
+        self._played_until: dict[str, float] = {}  # device -> wall clock when its last sound ended
+        self._announced: deque[tuple[float, str]] = deque(maxlen=32)  # (monotonic, normalised text)
         self._captions: dict[str, deque] = {}
         self._prompts: dict[str, _Prompt] = {}
         self._idle_timers: dict[str, asyncio.TimerHandle] = {}
@@ -322,7 +333,7 @@ class HousemateAdapter(BasePlatformAdapter):
             hub.on_pairing_change(self._desk_poke)
         if hasattr(registry, "on_change"):
             registry.on_change(lambda _rooms: self._desk_poke())
-        self.announcer = announcer or Announcer(_HubTap(hub, self), registry, self._tts)
+        self.announcer = announcer or Announcer(_HubTap(hub, self), registry, self._tts, on_speak=self._note_announced)
         self.timers = timers or TimerService(
             store,
             time.time,
@@ -467,6 +478,37 @@ class HousemateAdapter(BasePlatformAdapter):
             return
         self.config.extra["allow_from"] = paired
 
+    def _device_allowed(self, device_id: str | None) -> bool:
+        """May this device talk to Hermes (and so answer its prompts)? The same order Hermes's own
+        check uses: ``HOUSEMATE_ALLOW_ALL_DEVICES``, else the env allowlists when any is set
+        (``HOUSEMATE_ALLOWED_DEVICES``, ``GATEWAY_ALLOWED_USERS``), else every paired device."""
+        if not device_id or self.store is None:
+            return False
+        try:
+            device = self.store.get_device(device_id)
+        except Exception:
+            return False
+        if device is None or not device.paired:
+            return False
+        if _truthy(_secret("HOUSEMATE_ALLOW_ALL_DEVICES")):
+            return True
+        listed = _id_set(_secret("HOUSEMATE_ALLOWED_DEVICES")) | _id_set(_secret("GATEWAY_ALLOWED_USERS"))
+        if listed:
+            return "*" in listed or device_id in listed
+        return True
+
+    def _allowed_in(self, room: str | None) -> list[str]:
+        """Online devices in ``room`` that may talk to Hermes."""
+        if not room or self.registry is None:
+            return []
+        return sorted(c.device_id for c in self.registry.devices_in(room) if self._device_allowed(c.device_id))
+
+    def _may_tap(self, device_id: str, prompt: "_Prompt") -> bool:
+        """A tap answers a prompt only from a device that was shown it, is still in its room and is
+        still allowed (a paired tablet outside the allowlist, or in another room, cannot approve)."""
+        return (prompt.presented and device_id in prompt.shown_to
+                and self._device_room(device_id) == prompt.room and self._device_allowed(device_id))
+
     # ======================================================================== voice mode
 
     def _should_auto_tts_for_chat(self, chat_id: str) -> bool:
@@ -515,6 +557,16 @@ class HousemateAdapter(BasePlatformAdapter):
             self._spawn(self._deliver_intercom(device_id, room, intercom[0], bytes(utt.pcm)))
             return
         pending = self.book.for_device(device_id)
+        if pending is not None and pending.kind in ("approval", "clarify") and self._heard_ourselves(utt):
+            # Our own audio (a reply, a ring, an announcement in any room) may be in this clip: it
+            # never answers a prompt. A ringing timer's "stop" still may.
+            stop = self.book.for_device(device_id, kinds=("stop",))
+            if stop is None:
+                log.info("housemate: an answer from %s overlapped our own audio; not taken", room)
+                self.book.drop(token=pending.token)
+                self._reprompt(pending.key, overlapped=True)
+                return
+            pending = stop
         if pending is not None:
             self._set_state(device_id, "thinking")
             self._spawn(self._send_answer(device_id, room, utt, pending))
@@ -677,9 +729,10 @@ class HousemateAdapter(BasePlatformAdapter):
         ringing = bool(room and self.timers is not None and self.timers.is_ringing(room))
         await self._send_state(device_id, "ringing" if ringing else "idle")
         await self._push_timers(device_id)
-        for prompt in list(self._prompts.values()):
-            if room and prompt.room == room:
-                await self._send(device_id, self._prompt_msg(prompt))
+        if room and self._device_allowed(device_id):
+            for prompt in list(self._prompts.values()):
+                if prompt.room == room and prompt.presented and await self._send(device_id, self._prompt_msg(prompt)):
+                    prompt.shown_to.add(device_id)
         queue = self._captions.pop(device_id, None)
         if queue:
             now = time.monotonic()
@@ -750,6 +803,11 @@ class HousemateAdapter(BasePlatformAdapter):
         if prompt is None:
             self._spawn(self._send(device_id, {"type": "prompt.clear", "id": ident or "-"}))
             return
+        if not self._may_tap(device_id, prompt):
+            log.warning("housemate: ignored a tap on %s %s from %s (not shown there, not in %s, or not allowed)",
+                        prompt.kind, prompt.id, device_id, prompt.room)
+            return
+        log.info("housemate: %s %s answered by a tap on %s", prompt.kind, prompt.id, device_id)
         if prompt.kind == "approval":
             choice = parse_yes_no(str(value or ""))
             if choice is None:
@@ -1057,6 +1115,37 @@ class HousemateAdapter(BasePlatformAdapter):
             self._arm_playback_timer(device_id, sid, max(0.0, remaining) + PLAYBACK_GRACE_S)
         elif mtype == "play.abort":
             self._playback_finished(device_id, sid, aborted=True)
+        elif mtype == "chime":
+            self._note_chime(device_id)
+
+    def _note_chime(self, device_id: str) -> None:
+        """A chime plays on the device itself; count it as our audio for the echo guard."""
+        until = time.time() + CHIME_S
+        self._played_until[device_id] = max(self._played_until.get(device_id, 0.0), until)
+
+    def _heard_ourselves(self, utt: Any) -> bool:
+        """Could this clip hold our own audio? True while any Housemate device plays (in any room:
+        earshot groups are a hint, not a guarantee) or when the clip began less than
+        ``ECHO_TAIL_S`` after the last sound one played."""
+        if self._playing:
+            return True
+        started = float(getattr(utt, "started_at", 0.0) or 0.0)
+        last = max(self._played_until.values(), default=float("-inf"))
+        return started < last + ECHO_TAIL_S
+
+    def _note_announced(self, text: str) -> None:
+        """The announcer is about to say ``text`` (announcements, timer rings, deliveries)."""
+        said = normalize(text)
+        if said:
+            self._announced.append((time.monotonic(), said))
+
+    def _was_announced(self, transcript: str) -> bool:
+        """Is this transcript something we said ourselves a little while ago? (any thread)"""
+        said = normalize(transcript)
+        if not said:
+            return False
+        cutoff = time.monotonic() - ANNOUNCED_TTL_S
+        return any(at >= cutoff and f" {said} " in f" {text} " for at, text in list(self._announced))
 
     def _observe_pcm(self, device_id: str, n: int) -> None:
         playing = self._playing.get(device_id)
@@ -1097,6 +1186,7 @@ class HousemateAdapter(BasePlatformAdapter):
         if playing is None or playing.stream_id != stream_id:
             return
         del self._playing[device_id]
+        self._played_until[device_id] = max(self._played_until.get(device_id, 0.0), time.time())
         if playing.end_timer is not None:
             playing.end_timer.cancel()
         listener = self.listeners.get(device_id)
@@ -1111,7 +1201,10 @@ class HousemateAdapter(BasePlatformAdapter):
         if playing.kind == "rep" and self.cfg.followup_s > 0:
             self._open_window(device_id, self.cfg.followup_s)
         elif playing.kind == "ask":
-            self._open_window(device_id, self.cfg.answer_window_s)
+            if self.book.for_device(device_id, kinds=("approval", "clarify")) is not None:
+                self._open_window(device_id, self.cfg.answer_window_s)
+            else:
+                self._set_state(device_id, "ringing" if ringing else "idle")  # tap-only prompt
         elif ringing:
             if listener is not None:
                 listener.open_followup(15.0)  # "stop" without the wake word between ring cycles
@@ -1189,18 +1282,20 @@ class HousemateAdapter(BasePlatformAdapter):
         device_id = self._reply_device(chat_id)
         card_id = prompt.request_id or f"appr-{uuid.uuid4().hex[:12]}"
         what = " ".join(str(prompt.description or "").split()) or "run a command"
-        question = f"I need your OK to run a command: {what}. Say approve, or deny."
+        flagged = bool(getattr(prompt, "smart_denied", False))
+        if flagged:
+            # Hermes's smart approval flagged it: say so, and take the answer from a tap only.
+            question = f"Careful: Hermes's safety check flagged a command: {what}. Tap approve or deny on the screen."
+        else:
+            question = f"I need your OK to run a command: {what}. Say approve, or deny."
         entry = _Prompt("approval", card_id, chat_id, prompt.session_key, room, device_id, question,
-                        ["Approve", "Deny"], request_id=prompt.request_id, title="Run a command?",
-                        detail=what, command=" ".join(str(prompt.command or "").split())[:400])
-        self._prompts[card_id] = entry
-        if not await self._show_prompt(entry):
-            self._prompts.pop(card_id, None)
+                        ["Approve", "Deny"], request_id=prompt.request_id,
+                        title="Flagged command: run it?" if flagged else "Run a command?",
+                        detail=what, command=" ".join(str(prompt.command or "").split())[:400],
+                        spoken=question, smart_denied=flagged)
+        if not await self._open_prompt(entry):
             log.warning("housemate: no device online in %s for the approval; it will time out (deny)", room)
             return SendResult(success=False, error=f"no Housemate device is online in {room}")
-        if device_id is not None:
-            self._arm_answer(entry)
-            self._spawn(self._ask(entry, question))
         return SendResult(success=True, message_id=card_id)
 
     async def send_clarify(self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,
@@ -1212,19 +1307,58 @@ class HousemateAdapter(BasePlatformAdapter):
         text, skippable = _split_skip_hint(question)
         entry = _Prompt("clarify", clarify_id, chat_id, session_key, room, device_id, _plain(text), labels,
                         skippable=skippable)
-        self._prompts[clarify_id] = entry
         spoken = entry.question
         if labels and len(labels) <= 6:
             spoken += " " + _read_choices(labels) + "."
         if skippable:
             spoken += " Or say skip."
-        if not await self._show_prompt(entry):
-            self._prompts.pop(clarify_id, None)
+        entry.spoken = spoken
+        if not await self._open_prompt(entry):
             return SendResult(success=False, error=f"no Housemate device is online in {room}")
-        if device_id is not None:
-            self._arm_answer(entry)
-            self._spawn(self._ask(entry, spoken))
         return SendResult(success=True, message_id=clarify_id)
+
+    async def _open_prompt(self, prompt: _Prompt) -> bool:
+        """One prompt per room at a time: the first open one is on the screens, spoken and armed;
+        later ones wait their turn (a spoken "approve" answers what was asked, never a newer card).
+        False when no allowed device is online in the room."""
+        if not self._allowed_in(prompt.room):
+            return False
+        self._prompts[prompt.id] = prompt
+        if self._room_head(prompt.room) is not prompt:
+            log.info("housemate: %s %s waits behind the open prompt in %s", prompt.kind, prompt.id, prompt.room)
+            return True
+        if await self._present(prompt):
+            return True
+        self._prompts.pop(prompt.id, None)
+        self._promote(prompt.room)  # one may have queued behind it while the card was being sent
+        return False
+
+    def _room_head(self, room: str | None) -> _Prompt | None:
+        return next((p for p in self._prompts.values() if p.room == room), None)
+
+    async def _present(self, prompt: _Prompt) -> bool:
+        """Show the card in its room, then speak it on one device and arm that device's answer."""
+        prompt.presented = True
+        if not await self._show_prompt(prompt):
+            return False
+        if prompt.device_id not in prompt.shown_to:
+            prompt.device_id = min(prompt.shown_to) if prompt.shown_to else None
+        if prompt.device_id is not None and prompt.id in self._prompts:
+            if not prompt.smart_denied:
+                self._arm_answer(prompt)
+            self._spawn(self._ask(prompt, prompt.spoken or prompt.question))
+        return True
+
+    def _promote(self, room: str | None) -> None:
+        """The room's open prompt was settled: bring up the next one, if any."""
+        nxt = self._room_head(room)
+        if nxt is not None and not nxt.presented:
+            self._spawn(self._present_next(nxt))
+
+    async def _present_next(self, prompt: _Prompt) -> None:
+        if not await self._present(prompt):
+            log.warning("housemate: no device online in %s for the next %s; it shows when one connects",
+                        prompt.room, prompt.kind)
 
     async def retire_clarify_card(self, clarify_id: str, notice: str) -> None:
         prompt = self._prompts.get(clarify_id)
@@ -1240,11 +1374,12 @@ class HousemateAdapter(BasePlatformAdapter):
         return msg
 
     async def _show_prompt(self, prompt: _Prompt) -> bool:
-        if not prompt.room:
-            return False
+        """Send the card to the allowed devices in its room; only they may tap it."""
         sent = 0
-        for conn in self.registry.devices_in(prompt.room):
-            sent += await self._send(conn.device_id, self._prompt_msg(prompt))
+        for device_id in self._allowed_in(prompt.room):
+            if await self._send(device_id, self._prompt_msg(prompt)):
+                prompt.shown_to.add(device_id)
+                sent += 1
         return sent > 0
 
     async def _ask(self, prompt: _Prompt, text: str) -> None:
@@ -1258,8 +1393,10 @@ class HousemateAdapter(BasePlatformAdapter):
             return
         stream = await self._start_stream(prompt.device_id, PLAY_RATE, "ask", ref=prompt.id) if pcm else None
         if stream is None:
-            await self._send(prompt.device_id, {"type": "chime", "kind": "prompt"})
-            self._open_window(prompt.device_id, self.cfg.answer_window_s)
+            if await self._send(prompt.device_id, {"type": "chime", "kind": "prompt"}):
+                self._note_chime(prompt.device_id)
+            if self.book.for_device(prompt.device_id, kinds=("approval", "clarify")) is not None:
+                self._open_window(prompt.device_id, self.cfg.answer_window_s)
             return
         stream.playout.write(pcm)
         stream.playout.finish()
@@ -1272,6 +1409,9 @@ class HousemateAdapter(BasePlatformAdapter):
 
         def handle(transcript: str) -> str:  # runs in Hermes's agent thread
             if prompt.kind == "approval":
+                if self._was_announced(transcript):
+                    loop.call_soon_threadsafe(self._reprompt, prompt.id)
+                    return "matches something we announced: not an answer"
                 choice = parse_yes_no(transcript)
                 if choice is None:
                     loop.call_soon_threadsafe(self._reprompt, prompt.id)
@@ -1385,16 +1525,26 @@ class HousemateAdapter(BasePlatformAdapter):
         if prompt.device_id and ok:
             self._set_state(prompt.device_id, "thinking")
 
-    def _reprompt(self, card_id: str) -> None:
+    def _reprompt(self, card_id: str, *, overlapped: bool = False) -> None:
+        """Ask again (at most ``MAX_REPROMPTS`` times, then a tap is the only answer). ``overlapped``:
+        the answer clip held our own audio; ask on the screen and listen again once it is quiet."""
         prompt = self._prompts.get(card_id)
         if prompt is None or prompt.device_id is None:
             return
         prompt.tries += 1
         if prompt.tries > MAX_REPROMPTS:
+            self.book.drop(key=prompt.id)
             self._spawn(self._caption_room(prompt.room, "status", "No answer understood; tap a button on the screen."))
             self._set_state(prompt.device_id, "idle")
             return
         self._arm_answer(prompt)
+        if overlapped:
+            say = "say approve, or deny" if prompt.kind == "approval" else "answer again"
+            self._spawn(self._caption_room(prompt.room, "status",
+                                           f"Sorry, I couldn't hear you over the speaker; {say}, or tap."))
+            if prompt.device_id not in self._playing:
+                self._open_window(prompt.device_id, self.cfg.answer_window_s)
+            return
         if prompt.kind == "approval":
             again = "Sorry, I didn't catch that. Say approve, or deny."
         elif prompt.choices:
@@ -1412,10 +1562,12 @@ class HousemateAdapter(BasePlatformAdapter):
                 stream.playout.abort()
         if prompt.room:
             self._spawn(self._clear_prompt(prompt, note))
+            self._promote(prompt.room)
 
     async def _clear_prompt(self, prompt: _Prompt, note: str) -> None:
-        for conn in self.registry.devices_in(prompt.room):
-            await self._send(conn.device_id, {"type": "prompt.clear", "id": prompt.id})
+        devices = {conn.device_id for conn in self.registry.devices_in(prompt.room)} | prompt.shown_to
+        for device_id in sorted(devices):
+            await self._send(device_id, {"type": "prompt.clear", "id": prompt.id})
         if note:
             await self._caption_room(prompt.room, "status", note)
 
@@ -1650,6 +1802,25 @@ class HousemateAdapter(BasePlatformAdapter):
     def recent_timings(self) -> list[dict]:
         """Stage times of the last finished turns, oldest first (``hermes housemate bench``)."""
         return list(self._turn_log)
+
+
+def _secret(name: str) -> str:
+    """An env setting read through Hermes's profile-scoped reader (a raw ``os.environ`` read sees the
+    default profile's value under ``gateway.multiplex_profiles``)."""
+    try:
+        from gateway.platforms._shared import get_scoped_secret
+
+        return str(get_scoped_secret(name, "") or "").strip()
+    except Exception:
+        return ""
+
+
+def _truthy(value: str) -> bool:
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _id_set(value: str) -> set[str]:
+    return {part.strip() for part in str(value or "").split(",") if part.strip()}
 
 
 def clarify_skip_value() -> str:

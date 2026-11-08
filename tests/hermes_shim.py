@@ -177,6 +177,14 @@ async def cache_audio_from_bytes_async(data: bytes, ext: str = ".ogg") -> str:
     return cache_audio_from_bytes(data, ext)
 
 
+def get_scoped_secret(name: str, default: Any = None, **_: Any) -> Any:
+    """Hermes reads env through the profile's secret scope; without Hermes that is the process env."""
+    import os
+
+    value = os.environ.get(name)
+    return default if value is None else value
+
+
 def install() -> bool:
     """Put the stand-ins in place unless Hermes is importable. True when the shim is active."""
     if HERMES_AVAILABLE:
@@ -195,7 +203,8 @@ def install() -> bool:
     )
     event = _module("gateway.platforms.event", MessageEvent=MessageEvent, MessageType=MessageType)
     mixin = _module("gateway.platforms.access_policy_mixin", OwnAccessPolicyMixin=OwnAccessPolicyMixin)
-    platforms = _module("gateway.platforms", base=base, event=event, access_policy_mixin=mixin)
+    shared = _module("gateway.platforms._shared", get_scoped_secret=get_scoped_secret)
+    platforms = _module("gateway.platforms", base=base, event=event, access_policy_mixin=mixin, _shared=shared)
     config = _module("gateway.config", Platform=Platform, PlatformConfig=PlatformConfig)
     gateway = _module("gateway", platforms=platforms, config=config, __housemate_shim__=True)
     sys.modules.update({
@@ -205,5 +214,6 @@ def install() -> bool:
         "gateway.platforms.base": base,
         "gateway.platforms.event": event,
         "gateway.platforms.access_policy_mixin": mixin,
+        "gateway.platforms._shared": shared,
     })
     return True

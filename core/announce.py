@@ -178,11 +178,13 @@ class Announcer:
         *,
         decode: Callable[[Path, int], Awaitable[bytes]] = decode_to_pcm,
         sample_rate: int = PLAY_RATE,
+        on_speak: Callable[[str], None] | None = None,
     ) -> None:
         self._hub = hub
         self._rooms = rooms
         self._tts = tts
         self._decode = decode
+        self._on_speak = on_speak  # sees every text spoken, cached or not (the adapter's echo check)
         self.sample_rate = sample_rate
         self._cache: OrderedDict[str, bytes] = OrderedDict()
 
@@ -304,6 +306,11 @@ class Announcer:
             return []
 
     async def _speech_pcm(self, text: str) -> bytes:
+        if self._on_speak is not None:
+            try:
+                self._on_speak(text)
+            except Exception:
+                log.debug("housemate: on_speak observer failed", exc_info=True)
         pcm = self._cache.get(text)
         if pcm is not None:
             self._cache.move_to_end(text)

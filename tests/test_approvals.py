@@ -1,9 +1,12 @@
+import time
+
 import pytest
 
 from adapter_kit import Kit, utterance
 
 from gateway.platforms.base import ExecApprovalPrompt  # noqa: E402  (shimmed when Hermes is absent)
 
+from housemate.adapter import ECHO_TAIL_S
 from housemate.core.answers import SIDE_CHAT, apply_answer, split_marker
 
 SESSION = "agent:main:housemate:dm:household"
@@ -17,12 +20,12 @@ async def kit(tmp_path):
     return k
 
 
-def approval(request_id="req-1"):
+def approval(request_id="req-1", *, smart_denied=False):
     return ExecApprovalPrompt(
         chat_id="household", session_key=SESSION,
         text="Hermes wants to run a command that needs your OK",
         actions=[("Allow Once", "once", "primary"), ("Deny", "deny", "danger")],
-        command="rm -rf ./junk", description="recursive delete", smart_denied=False, request_id=request_id,
+        command="rm -rf ./junk", description="recursive delete", smart_denied=smart_denied, request_id=request_id,
     )
 
 
@@ -39,10 +42,26 @@ async def ask_approval(kit, request_id="req-1"):
     return result
 
 
+async def quiet(kit):
+    """Every device reports that what it played has been heard (the answer window opens)."""
+    for device_id, playing in list(kit.adapter._playing.items()):
+        await kit.adapter._on_control(device_id, {"type": "playback.done", "stream_id": playing.stream_id})
+    await kit.settle()
+
+
+def fresh_utterance(seconds: float = 0.6):
+    """Speech that began after the echo tail of the last sound we played."""
+    utt = utterance(seconds)
+    utt.started_at = time.time() + ECHO_TAIL_S + 0.05
+    utt.ended_at = utt.started_at + seconds
+    return utt
+
+
 async def answer_by_voice(kit, transcript: str, device="dev-kitchen"):
     """The device speaks; the clip goes to the side chat; Hermes transcribes it; our hook runs."""
+    await quiet(kit)
     before = len(kit.events)
-    kit.adapter._on_utterance(device, utterance(0.6), "followup")
+    kit.adapter._on_utterance(device, fresh_utterance(), "followup")
     await kit.settle()
     side = kit.events[before]
     assert side.source.chat_id == SIDE_CHAT and side.source.user_id == device
@@ -90,8 +109,188 @@ async def test_tap_approve_resolves_card_with_request_id(kit):
 
 async def test_tap_deny(kit):
     await ask_approval(kit)
-    await kit.adapter._on_control("dev-office", {"type": "ui.action", "kind": "deny", "id": "req-1"})
+    await kit.adapter._on_control("dev-kitchen", {"type": "ui.action", "kind": "deny", "id": "req-1"})
     assert kit.resolved == [(SESSION, "deny", "req-1")]
+
+
+# --- who may tap (review M1) ----------------------------------------------------------------------
+
+
+async def test_tap_from_another_room_is_ignored(kit):
+    await ask_approval(kit)
+    await kit.adapter._on_control("dev-office", {"type": "ui.action", "kind": "approve", "id": "req-1"})
+    await kit.settle()
+    assert kit.resolved == []
+    assert "req-1" in kit.adapter._prompts
+
+
+async def test_tap_from_a_device_outside_the_allowlist_is_ignored(kit, monkeypatch):
+    monkeypatch.setenv("HOUSEMATE_ALLOWED_DEVICES", "dev-kitchen")
+    kit.add_device("dev-kid", "Kitchen", "Kid tablet")
+    await ask_approval(kit)
+    assert kit.hub.controls("dev-kid", "prompt") == []  # the card only goes to allowed devices
+    await kit.adapter._on_control("dev-kid", {"type": "ui.action", "kind": "approve", "id": "req-1"})
+    await kit.adapter._on_control("dev-kid", {"type": "ui.action", "kind": "prompt", "id": "req-1", "value": "Approve"})
+    await kit.settle()
+    assert kit.resolved == []
+    await kit.adapter._on_control("dev-kitchen", {"type": "ui.action", "kind": "deny", "id": "req-1"})
+    assert kit.resolved == [(SESSION, "deny", "req-1")]
+
+
+async def test_tap_from_a_device_that_left_the_room_is_ignored(kit):
+    kit.add_device("dev-tablet", "Kitchen", "Kitchen tablet")
+    await ask_approval(kit)
+    assert kit.hub.controls("dev-tablet", "prompt")[-1]["id"] == "req-1"
+    kit.registry.attach("dev-tablet", "office", kit.registry.get("dev-tablet"))  # room.set to the office
+    await kit.adapter._on_control("dev-tablet", {"type": "ui.action", "kind": "approve", "id": "req-1"})
+    assert kit.resolved == []
+
+
+async def test_clarify_tap_from_another_room_is_ignored(kit):
+    await start_turn(kit)
+    await kit.adapter.send_clarify("household", "Which dinner?", ["Pasta", "Pizza"], "clar-9", SESSION)
+    await kit.settle()
+    await kit.adapter._on_control("dev-office", {"type": "ui.action", "kind": "prompt", "id": "clar-9", "value": "Pasta"})
+    assert kit.clarified == []
+
+
+# --- the answer must be the user's, not our own audio (review H1) --------------------------------
+
+
+async def test_hedged_spoken_answers_never_approve(kit):
+    await ask_approval(kit)
+    for said in ("Yes, but what will it delete first?", "Yeah, wait, what does that do?"):
+        await answer_by_voice(kit, said)
+    assert kit.resolved == []
+
+
+async def test_answer_heard_while_another_room_plays_is_not_an_answer(kit):
+    """A ring or announcement in a neighbouring room (no shared earshot group) is captured by the
+    asking device: never sent to speech-to-text as an answer."""
+    await ask_approval(kit)
+    await quiet(kit)
+    kit.adapter._observe_control("dev-office", {"type": "play.begin", "stream_id": "say-ring1", "sample_rate": 24000})
+    before = len(kit.events)
+    kit.adapter._on_utterance("dev-kitchen", fresh_utterance(), "followup")
+    await kit.settle()
+    assert len(kit.events) == before
+    assert kit.resolved == []
+    assert "req-1" in kit.adapter._prompts  # still open: tap, or answer again once it is quiet
+
+
+async def test_answer_right_after_our_own_audio_is_not_an_answer(kit):
+    await ask_approval(kit)
+    await quiet(kit)  # the question was heard just now
+    before = len(kit.events)
+    kit.adapter._on_utterance("dev-kitchen", utterance(0.6), "followup")  # began within the echo tail
+    await kit.settle()
+    assert len(kit.events) == before
+    assert kit.resolved == []
+    # a clean answer afterwards still works
+    await answer_by_voice(kit, "Approve.")
+    assert kit.resolved == [(SESSION, "once", "req-1")]
+
+
+async def test_a_chime_counts_as_our_own_audio(kit):
+    await ask_approval(kit)
+    await quiet(kit)
+    kit.adapter._observe_control("dev-office", {"type": "chime", "kind": "timer"})
+    before = len(kit.events)
+    kit.adapter._on_utterance("dev-kitchen", utterance(0.6), "followup")  # started during the chime
+    await kit.settle()
+    assert len(kit.events) == before
+
+
+async def test_timer_labelled_approve_cannot_approve(kit):
+    """Review H1 exploit: housemate_timer_set(label="approve") rings "Your approve timer is done."
+    Even transcribed after the echo tail, the ring text is not an answer."""
+    await ask_approval(kit)
+    out = await answer_by_voice(kit, "Your approve timer is done.")
+    assert out["action"] == "block"
+    await answer_by_voice(kit, "Your go ahead timer is done.")
+    assert kit.resolved == []
+
+
+async def test_words_we_announced_are_not_an_answer(kit):
+    """housemate_announce("Approve.") into another room: if its audio slips past the echo guard, the
+    transcript is what we said ourselves a moment ago, so it is not an answer."""
+    await ask_approval(kit)
+    await kit.adapter.announcer.say("office", "Approve.")
+    await kit.settle()
+    await answer_by_voice(kit, "Approve.")
+    assert kit.resolved == []
+
+
+async def test_smart_denied_approval_is_tap_only(kit):
+    await start_turn(kit)
+    result = await kit.adapter._send_exec_approval_prompt(approval("req-s", smart_denied=True))
+    await kit.settle()
+    assert result.success
+    assert kit.adapter.book.for_device("dev-kitchen") is None  # nothing spoken can answer it
+    spoken = kit.tts.texts[-1].lower()
+    assert "flagged" in spoken and "tap" in spoken
+    assert "flagged" in kit.hub.controls("dev-kitchen", "prompt")[-1]["text"].lower()
+    await kit.adapter._on_control("dev-kitchen", {"type": "ui.action", "kind": "approve", "id": "req-s"})
+    assert kit.resolved == [(SESSION, "once", "req-s")]
+
+
+# --- one prompt at a time per room (review H2) ------------------------------------------------------
+
+
+async def test_spoken_answer_resolves_the_prompt_that_was_asked(kit):
+    """Two approvals pending on one device: "approve" answers the one on screen and spoken (A),
+    never the newest (B). B is shown and asked once A is settled."""
+    await ask_approval(kit, "req-A")
+    await kit.adapter._send_exec_approval_prompt(approval("req-B"))
+    await kit.settle()
+    assert [m["id"] for m in kit.hub.controls("dev-kitchen", "prompt")] == ["req-A"]
+    assert sum("recursive delete" in t for t in kit.tts.texts) == 1
+    await answer_by_voice(kit, "Approve.")
+    assert kit.resolved == [(SESSION, "once", "req-A")]
+    await kit.settle()
+    assert [m["id"] for m in kit.hub.controls("dev-kitchen", "prompt")] == ["req-A", "req-B"]
+    await answer_by_voice(kit, "Deny.")
+    assert kit.resolved == [(SESSION, "once", "req-A"), (SESSION, "deny", "req-B")]
+
+
+async def test_three_pending_approvals_are_answered_in_order(kit):
+    await ask_approval(kit, "req-A")
+    for rid in ("req-B", "req-C"):
+        await kit.adapter._send_exec_approval_prompt(approval(rid))
+    await kit.settle()
+    await answer_by_voice(kit, "Approve.")
+    await answer_by_voice(kit, "Deny.")
+    await answer_by_voice(kit, "Approve.")
+    assert [r[2] for r in kit.resolved] == ["req-A", "req-B", "req-C"]
+    assert [r[1] for r in kit.resolved] == ["once", "deny", "once"]
+
+
+async def test_a_queued_prompt_cannot_be_tapped_before_it_is_shown(kit):
+    await ask_approval(kit, "req-A")
+    await kit.adapter._send_exec_approval_prompt(approval("req-B"))
+    await kit.settle()
+    await kit.adapter._on_control("dev-kitchen", {"type": "ui.action", "kind": "approve", "id": "req-B"})
+    assert kit.resolved == []
+
+
+async def test_timeout_of_the_first_prompt_brings_up_the_next(kit):
+    await ask_approval(kit, "req-A")
+    await kit.adapter._send_exec_approval_prompt(approval("req-B"))
+    await kit.settle()
+    await kit.adapter.edit_message("household", "req-A", "Approval timed out after 5 minutes - the command was NOT run.")
+    await kit.settle()
+    assert kit.hub.controls("dev-kitchen", "prompt")[-1]["id"] == "req-B"
+    await answer_by_voice(kit, "Approve.")
+    assert kit.resolved == [(SESSION, "once", "req-B")]
+
+
+async def test_hello_replays_only_the_prompt_on_screen(kit):
+    await ask_approval(kit, "req-A")
+    await kit.adapter._send_exec_approval_prompt(approval("req-B"))
+    await kit.settle()
+    kit.hub.calls.clear()
+    await kit.adapter._on_hello("dev-kitchen")
+    assert [m["id"] for m in kit.hub.controls("dev-kitchen", "prompt")] == ["req-A"]
 
 
 # --- spoken answers ------------------------------------------------------------------------------

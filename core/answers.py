@@ -113,16 +113,21 @@ class AnswerBook:
             return None
         return entry
 
-    def for_device(self, device_id: str) -> PendingAnswer | None:
-        """The newest live entry waiting on this device."""
+    def for_device(self, device_id: str, *, kinds: tuple[str, ...] | None = None) -> PendingAnswer | None:
+        """The live entry this device's next utterance answers (only ``kinds`` when given).
+
+        An approval or clarify question outranks a ringing timer's "stop"; among prompts the oldest
+        wins (the adapter arms one prompt per room at a time: the one on screen and spoken)."""
         with self._lock:
             self._purge()
-            live = [e for e in self._entries.values() if e.device_id == device_id]
+            live = [e for e in self._entries.values()
+                    if e.device_id == device_id and (kinds is None or e.kind in kinds)]
         if not live:
             return None
-        # An approval or clarify question outranks a ringing timer's "stop"; among equals the newest wins.
         prompts = [e for e in live if e.kind in ("approval", "clarify")]
-        return (prompts or live)[-1]
+        if prompts:
+            return min(prompts, key=lambda e: e.created_at)
+        return live[-1]
 
     def drop(self, *, token: str | None = None, key: str | None = None, kind: str | None = None,
              device_id: str | None = None, room: str | None = None) -> list[PendingAnswer]:
