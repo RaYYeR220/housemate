@@ -76,6 +76,9 @@ class HubServices:
     urls: list[str] = field(default_factory=list)  # LAN URLs satellites open, best first
     fingerprint: str | None = None  # SHA-256 of the hub's TLS certificate
     timings: Callable[[], list[dict]] | None = None  # recent turns' stage times (the bench reads them)
+    desk: Any = None  # core.desk.DeskLog: last exchange per room + arbitration rounds (Rooms page)
+    mode: Callable[[], str] | None = None  # the conversation mode in effect
+    set_mode: Callable[[str], Awaitable[dict]] | None = None  # switch it now and persist it
 
 
 # --- in-process registration ------------------------------------------------------------------
@@ -253,18 +256,79 @@ async def _op_devices(s: HubServices, a: dict) -> dict:
     return {"ok": True, "devices": devices}
 
 
-async def _op_pair_approve(s: HubServices, a: dict) -> dict:
+def _pairing_code(a: dict) -> str:
     raw = a.get("code")
     code = re.sub(r"\D", "", str(raw if raw is not None else ""))
     if len(code) != 6:
         raise ValueError("a pairing code has 6 digits (it is shown on the device's screen)")
-    if not await _need(s, "hub").approve_pairing(code):
+    return code
+
+
+def _room_name(a: dict, key: str = "room") -> str | None:
+    """A room to put a device in: an existing room, or a new one with a sensible name."""
+    name = _text(a, key, max_len=64)
+    if not name:
+        return None
+    try:
+        slugify(name)
+    except ValueError:
+        raise ValueError("a room name needs letters or digits") from None
+    return name
+
+
+async def _op_pair_approve(s: HubServices, a: dict) -> dict:
+    code = _pairing_code(a)
+    room = _room_name(a)
+    hub = _need(s, "hub")
+    approved = await (hub.approve_pairing(code, room) if room else hub.approve_pairing(code))
+    if not approved:
         return {
             "ok": False,
             "error": f"no device is waiting with code {code}; codes expire after 10 minutes, "
             "reload the page on the device for a new one",
         }
+    return {"ok": True, "code": code, **({"room": slugify(room)} if room else {})}
+
+
+async def _op_pair_deny(s: HubServices, a: dict) -> dict:
+    code = _pairing_code(a)
+    if not await _need(s, "hub").deny_pairing(code):
+        return {"ok": False, "error": f"no device is waiting with code {code}"}
     return {"ok": True, "code": code}
+
+
+async def _op_assign(s: HubServices, a: dict) -> dict:
+    """Put a paired device in a room (the Rooms page's drag; the device is told at once)."""
+    device_id = _text(a, "device_id", required=True, max_len=128)
+    room = _room_name(a)
+    if room is None:
+        raise ValueError("room is required")
+    if not await _need(s, "hub").assign_room(device_id, room):
+        known = ", ".join(d.device_id for d in s.store.list_devices() if d.paired) or "none"
+        return {"ok": False, "error": f"no paired device {device_id!r}; paired devices: {known}"}
+    return {"ok": True, "device_id": device_id, "room": slugify(room)}
+
+
+async def _op_mode(s: HubServices, a: dict) -> dict:
+    """Read or switch the conversation mode: ``household`` (one conversation) or ``per_room``."""
+    from .desk import CONVERSATION_MODES
+
+    raw = a.get("mode")
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return {"ok": True, "mode": s.mode() if callable(s.mode) else None}
+    mode = str(raw).strip().lower().replace("-", "_").replace(" ", "_")
+    if mode not in CONVERSATION_MODES:
+        raise ValueError(f"mode must be one of {', '.join(CONVERSATION_MODES)}")
+    if not callable(s.set_mode):
+        raise RuntimeError("the hub cannot switch the conversation mode")
+    return await s.set_mode(mode)
+
+
+async def _op_desk_state(s: HubServices, a: dict) -> dict:
+    """Everything the Desktop Rooms page draws (``qr: true`` adds the hub address as a QR path)."""
+    from .desk import desk_state
+
+    return desk_state(s, include_qr=bool(a.get("qr")))
 
 
 async def _op_revoke(s: HubServices, a: dict) -> dict:
@@ -398,6 +462,10 @@ _OPS: dict[str, Callable[[HubServices, dict], Awaitable[dict]]] = {
     "timer_cancel": _op_timer_cancel,
     "show": _op_show,
     "pair_approve": _op_pair_approve,
+    "pair_deny": _op_pair_deny,
+    "assign": _op_assign,
+    "mode": _op_mode,
+    "desk_state": _op_desk_state,
     "devices": _op_devices,
     "revoke": _op_revoke,
     "room_add": _op_room_add,

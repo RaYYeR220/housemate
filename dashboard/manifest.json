@@ -1,0 +1,7 @@
+{
+  "name": "housemate",
+  "label": "Housemate",
+  "description": "Backend routes of the Housemate Rooms page in Hermes Desktop (rooms, devices, timers, pairing). No dashboard tab.",
+  "tab": {"hidden": true},
+  "api": "plugin_api.py"
+}

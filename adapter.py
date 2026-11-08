@@ -28,7 +28,7 @@ import os
 import time
 import uuid
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -48,6 +48,7 @@ from .core.announce import PLAY_RATE, Announcer, decode_to_pcm, tts_paths_from_r
 from .core.arbiter import WakeArbiter
 from .core.audio import pcm_to_wav
 from .core.config import HousemateConfig
+from .core.desk import DeskFeed, DeskLog, desk_state, persist_mode
 from .core.intents import is_skip, is_stop, parse_choice, parse_yes_no, spoken_label
 from .core.playout import PcmRealigner, Playout
 from .core.router import HOUSEHOLD_CHAT, SessionRouter
@@ -187,6 +188,11 @@ class HousemateAdapter(BasePlatformAdapter):
         self.cfg = HousemateConfig.from_extra(getattr(config, "extra", None))
         self.router = SessionRouter(self.cfg.conversation, turn_timeout_s=self.cfg.turn_timeout_s)
         self.arbiter = WakeArbiter()
+        # What the Desktop Rooms page shows; every change pokes the feed (plugin event to Desktop).
+        self.desk = DeskLog(on_change=self._desk_poke)
+        self.arbiter.on_decide(self.desk.wake)
+        self._feed: DeskFeed | None = None
+        self._persist_mode: Callable[[str], Optional[str]] = persist_mode
         self.store: Any = None
         self.registry: Any = None
         self.hub: Any = None
@@ -263,8 +269,11 @@ class HousemateAdapter(BasePlatformAdapter):
         from .core.control import HubServices, register_local_services
 
         self.services = HubServices(store, registry, hub, self.timers, self.announcer, list(self.urls), self.fingerprint,
-                                    timings=self.recent_timings)
+                                    timings=self.recent_timings, desk=self.desk, mode=lambda: self.router.mode,
+                                    set_mode=self._set_mode)
         register_local_services(self.services, self._loop)
+        self._feed = DeskFeed(self._loop, lambda: desk_state(self.services))
+        self.desk.info["wake_word"] = self.cfg.wake_model
         self.control = ControlServer(self.services, data_dir / "control.token", port=self.cfg.control_port)
         try:
             await self.control.start()
@@ -290,6 +299,10 @@ class HousemateAdapter(BasePlatformAdapter):
         hub.on_control(self._on_control)
         if hasattr(hub, "on_disconnect"):
             hub.on_disconnect(self._on_disconnect)
+        if hasattr(hub, "on_pairing_change"):
+            hub.on_pairing_change(self._desk_poke)
+        if hasattr(registry, "on_change"):
+            registry.on_change(lambda _rooms: self._desk_poke())
         self.announcer = announcer or Announcer(_HubTap(hub, self), registry, self._tts)
         self.timers = timers or TimerService(
             store,
@@ -317,6 +330,8 @@ class HousemateAdapter(BasePlatformAdapter):
             self.models = await asyncio.to_thread(
                 load_audio_models, data_dir, wake_model=self.cfg.wake_model, vad=self.cfg.vad)
             log.info("housemate: wake word %s ready in %.1f s", self.models.wake_model, time.monotonic() - started)
+            self.desk.info["wake_word"] = self.models.wake_model
+            self._desk_poke()
         except Exception as exc:
             log.error("housemate: wake-word models unavailable (%s); tap-to-talk only", exc)
             self.models = None
@@ -380,6 +395,9 @@ class HousemateAdapter(BasePlatformAdapter):
         for task in (self._watchdog, self._timer_task):
             if task is not None:
                 task.cancel()
+        if self._feed is not None:
+            self._feed.close()
+            self._feed = None
         if self.timers is not None:
             with contextlib.suppress(Exception):
                 self.timers.close()
@@ -1360,6 +1378,7 @@ class HousemateAdapter(BasePlatformAdapter):
                 self._set_state(conn.device_id, "idle")
 
     async def _broadcast_timers(self, room: str, items: list[dict]) -> None:
+        self._desk_poke()
         await self.announcer.push_timers(room, items)
         if self.timers is not None and not self.timers.is_ringing(room):
             self.book.drop(kind="stop", room=room)
@@ -1373,6 +1392,31 @@ class HousemateAdapter(BasePlatformAdapter):
             return
         items = [t.to_dict() for t in self.timers.list(room)]
         await self._send(device_id, {"type": "timers", "items": items})
+
+    # ======================================================================== Desktop Rooms page
+
+    def _desk_poke(self) -> None:
+        """Something the Rooms page shows changed (any thread)."""
+        feed = self._feed
+        if feed is not None:
+            feed.poke()
+
+    async def _set_mode(self, mode: str) -> dict:
+        """Switch the conversation mode now (from the next question on) and save it in config.yaml
+        (``platforms.housemate.conversation``) so the next gateway start keeps it."""
+        previous = self.router.mode
+        self.router.mode = mode
+        self.cfg = replace(self.cfg, conversation=mode)
+        with contextlib.suppress(Exception):
+            self.config.extra["conversation"] = mode
+        error = await asyncio.to_thread(self._persist_mode, mode)
+        self._desk_poke()
+        log.info("housemate: conversation mode %s -> %s (%s)", previous, mode,
+                 "saved" if error is None else f"not saved: {error}")
+        result = {"ok": True, "mode": mode, "previous": previous, "applies": "next_question", "persisted": error is None}
+        if error is not None:
+            result["persist_error"] = error
+        return result
 
     # ======================================================================== helpers
 
@@ -1414,6 +1458,7 @@ class HousemateAdapter(BasePlatformAdapter):
         if not room or not text:
             return
         msg = {"type": "caption", "role": role, "text": text[:16_000]}
+        self.desk.caption(room, role, msg["text"])
         online = [c.device_id for c in self.registry.devices_in(room)]
         delivered = set()
         for device_id in online:

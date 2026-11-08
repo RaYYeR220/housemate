@@ -68,7 +68,8 @@ _TEXT = _str(16_000)
 
 # type -> (required {field: check}, optional {field: check})
 SATELLITE_TYPES: dict[str, tuple[dict, dict]] = {
-    "hello": ({"device_id": _device_id, "name": _str(64), "ua": _str(512)}, {"device_key": _str(256)}),
+    # ``room`` (optional): the room the user picked before pairing; the Rooms page shows it.
+    "hello": ({"device_id": _device_id, "name": _str(64), "ua": _str(512)}, {"device_key": _str(256), "room": _str(64)}),
     "room.set": ({"room": _str(64, min_len=1)}, {}),
     "ptt": ({"on": _bool}, {}),
     "mute": ({"on": _bool}, {}),

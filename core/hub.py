@@ -6,7 +6,8 @@ Pure aiohttp, no Hermes imports. The adapter owns one ``Hub`` and plugs in throu
 Trust model: a satellite says ``hello``. With a valid device key it is trusted; with a
 wrong key the socket is closed with 4401; without a key it only gets a 6-digit pairing
 code and nothing it sends is accepted until the owner approves that code out of band
-(``Hub.approve_pairing``: Desktop Rooms page or ``hermes housemate pair``).
+(``Hub.approve_pairing``: Desktop Rooms page or ``hermes housemate pair``). A denied device
+(``Hub.deny_pairing``) is closed with 4403 and gets no new code for ``deny_ttl_s``.
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ log = logging.getLogger(__name__)
 
 # Close codes the satellite acts on.
 CLOSE_BAD_KEY = 4401  # forget the stored key and pair again
+CLOSE_DENIED = 4403  # the owner denied this pairing request
 CLOSE_TIMEOUT = 4408  # hello never came, or the pairing code expired
 CLOSE_REPLACED = 4409  # the same device connected again
 CLOSE_RATE_LIMITED = 4429
@@ -139,6 +141,7 @@ class _Session:
     hello: dict | None = None
     authed: bool = False
     code: str | None = None
+    code_at: float = 0.0  # when the pairing code was handed out (hub clock)
     expiry: asyncio.Task | None = None
     conn: DeviceConn | None = None
     dropped: int = 0
@@ -162,6 +165,7 @@ class Hub:
         pairing_ttl_s: float = 600,
         hello_timeout_s: float = 10.0,
         max_pending_per_ip: int = 5,
+        deny_ttl_s: float = 600,
         clock: Callable[[], float] = time.time,
     ) -> None:
         if tls and (cert is None or key is None):
@@ -176,12 +180,15 @@ class Hub:
         self.pairing_ttl_s = pairing_ttl_s
         self.hello_timeout_s = hello_timeout_s
         self.max_pending_per_ip = max_pending_per_ip
+        self.deny_ttl_s = deny_ttl_s
         self._clock = clock
         self.stats: dict[str, int] = {"dropped_frames": 0, "bad_messages": 0}
 
         self._audio_cbs: list[Callable[[str, bytes], None]] = []
         self._control_cbs: list[Callable[[str, dict], Awaitable[None] | None]] = []
         self._disconnect_cbs: list[Callable[[str], None]] = []
+        self._pairing_cbs: list[Callable[[], None]] = []
+        self._denied: dict[str, float] = {}  # device id -> refused until (hub clock)
         self._sessions: dict[str, _Session] = {}  # trusted, by device id
         self._waiting: dict[str, _Session] = {}  # waiting for approval, by code
         self._pending_by_ip: dict[str, dict[str, float]] = {}  # ip -> {code: expires_at}
@@ -253,6 +260,10 @@ class Hub:
         """``cb(device_id)`` when a trusted device's live connection goes away (or is revoked)."""
         self._disconnect_cbs.append(cb)
 
+    def on_pairing_change(self, cb: Callable[[], None]) -> None:
+        """``cb()`` whenever the list of devices waiting for approval changes. Keep it quick."""
+        self._pairing_cbs.append(cb)
+
     async def send_control(self, device_id: str, msg: dict) -> bool:
         """Send to a trusted, connected device. False if it is not there (never raises for that).
 
@@ -282,8 +293,11 @@ class Hub:
             return False
         return True
 
-    async def approve_pairing(self, code: str) -> bool:
-        """Approve a code shown on a waiting satellite; that socket gets ``paired{device_key}``."""
+    async def approve_pairing(self, code: str, room: str | None = None) -> bool:
+        """Approve a code shown on a waiting satellite; that socket gets ``paired{device_key}``.
+
+        With ``room`` the device is placed there before it hears back, so ``paired`` already
+        carries its room (the Rooms page's drag-into-a-room)."""
         code = re.sub(r"\D", "", str(code))
         s = self._waiting.get(code)
         if s is None or s.ws.closed:
@@ -294,7 +308,58 @@ class Hub:
         device_id, device_key = result
         self._forget_waiting(s)
         self.store.upsert_device(device_id, s.name)
+        if room:
+            self.store.set_room(device_id, room)
         await self._authenticate(s, device_key)
+        return True
+
+    async def deny_pairing(self, code: str) -> bool:
+        """Refuse a waiting satellite: its socket is closed and it gets no new code for a while."""
+        code = re.sub(r"\D", "", str(code))
+        s = self._waiting.get(code)
+        if s is None:
+            return False
+        self._forget_waiting(s)
+        self.store.cancel_pairing(code)
+        if s.device_id:
+            self._denied[s.device_id] = self._clock() + self.deny_ttl_s
+        await self._send(s, {"type": "error", "code": "pairing_denied", "message": "the owner did not approve this device"})
+        self._close_later(s, CLOSE_DENIED, "pairing denied")
+        return True
+
+    def pending_pairings(self) -> list[dict[str, Any]]:
+        """Devices waiting for approval, oldest first: code, device id, name, browser, address."""
+        now = self._clock()
+        out = []
+        for code, s in self._waiting.items():
+            if s.ws.closed:
+                continue
+            hello = s.hello or {}
+            wants = hello.get("room")
+            out.append({
+                "code": code,
+                "device_id": s.device_id,
+                "name": s.name,
+                "ua": str(hello.get("ua") or "")[:200],
+                "ip": s.ip,
+                "wants": wants.strip()[:64] if isinstance(wants, str) and wants.strip() else None,
+                "since_s": max(0, round(now - s.code_at)),
+                "expires_in_s": max(0, round(s.code_at + self.pairing_ttl_s - now)),
+            })
+        return sorted(out, key=lambda p: -p["since_s"])
+
+    async def assign_room(self, device_id: str, room: str) -> bool:
+        """Move a paired device to ``room``; an online one is told at once. False if unknown."""
+        device = self.store.get_device(device_id)
+        if device is None or not device.paired:
+            return False
+        target = self.store.ensure_room(room)
+        self.store.set_room(device_id, target.slug)
+        s = self._sessions.get(device_id)
+        if s is not None and s.authed and not s.ws.closed and s.conn is not None:
+            self.rooms.attach(device_id, target.slug, s.conn)
+            await self._send(s, {"type": "state", "state": s.conn.state, "room": target.slug, "room_name": target.name})
+            await self._emit_control(device_id, {"type": "room.set", "room": target.slug, "room_name": target.name})
         return True
 
     async def revoke_device(self, device_id: str) -> bool:
@@ -428,6 +493,13 @@ class Hub:
             return
 
         now = self._clock()
+        refused_until = self._denied.get(s.device_id)
+        if refused_until is not None:
+            if refused_until > now:
+                await self._send(s, {"type": "error", "code": "pairing_denied", "message": "the owner did not approve this device"})
+                await s.ws.close(code=CLOSE_DENIED, message=b"pairing denied")
+                return
+            del self._denied[s.device_id]
         pending = self._pending_by_ip.setdefault(s.ip, {})
         for code, expires_at in list(pending.items()):
             if expires_at <= now:
@@ -443,9 +515,11 @@ class Hub:
             self.store.upsert_device(s.device_id, s.name)
         code = self.store.create_pairing_code(s.device_id, now, self.pairing_ttl_s)
         s.code = code
+        s.code_at = now
         self._waiting[code] = s
         pending[code] = now + self.pairing_ttl_s
         s.expiry = asyncio.create_task(self._expire_pairing(s, code))
+        self._pairing_changed()
         await self._send(s, {"type": "pair.code", "code": code})
 
     async def _expire_pairing(self, s: _Session, code: str) -> None:
@@ -547,6 +621,14 @@ class Hub:
         if s.expiry is not None:
             s.expiry.cancel()
             s.expiry = None
+        self._pairing_changed()
+
+    def _pairing_changed(self) -> None:
+        for cb in list(self._pairing_cbs):
+            try:
+                cb()
+            except Exception:
+                log.exception("housemate: pairing change callback failed")
 
     def _drop(self, s: _Session) -> None:
         code = s.code
