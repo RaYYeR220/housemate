@@ -404,3 +404,11 @@ async def test_run_op_never_raises(env):
     result = await run_op(env.services, "timer_list", {})
     assert result["ok"] is False and "disk on fire" in result["error"]
     assert (await run_op(env.services, "timer_set", ["not", "a", "dict"]))["ok"] is False
+
+
+async def test_timings_op_returns_recent_turns(env):
+    assert (await env.call("timings")) == {"ok": True, "turns": []}  # a hub without timing records
+    turns = [{"message_id": "m1", "room": "kitchen", "endpoint_at": 1000.0, "stages": {"endpoint": 0.0, "dispatch": 0.2}}]
+    env.services.timings = lambda: turns
+    result = await asyncio.to_thread(env.client().timings)
+    assert result == {"ok": True, "turns": turns}

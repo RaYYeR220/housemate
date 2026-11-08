@@ -352,3 +352,14 @@ async def test_queue_overflow_puts_the_dropped_room_back_to_idle(tmp_path):
     assert k.hub.controls("dev-office", "state")[-1]["state"] == "idle"
     assert k.hub.controls("dev-office", "caption")[-1]["role"] == "status"
     assert k.hub.controls("dev-hall", "state")[-1]["state"] == "thinking"
+
+
+async def test_finished_turn_timings_are_kept_for_the_bench(kit):
+    event = await speak(kit, "dev-kitchen")
+    assert kit.adapter.recent_timings() == []  # nothing until the turn ends
+    await kit.adapter.send("household", "Four.", reply_to=event.message_id)
+    await kit.settle()
+    (turn,) = kit.adapter.recent_timings()
+    assert turn["message_id"] == event.message_id and turn["room"] == "kitchen" and turn["kind"] == "wake"
+    assert turn["stages"]["endpoint"] == 0.0 and "dispatch" in turn["stages"] and "reply_text" in turn["stages"]
+    assert turn["endpoint_at"] > 0

@@ -76,6 +76,7 @@ STOP_ANSWER_TTL_S = 200.0
 PLAYBACK_GRACE_S = 3.0
 RECENT_TURN_S = 60.0
 MAX_REPROMPTS = 2
+TURN_LOG_SIZE = 100  # finished turns whose stage times the control API reports
 
 
 # --- small records -------------------------------------------------------------------------------
@@ -205,6 +206,8 @@ class HousemateAdapter(BasePlatformAdapter):
         self._idle_timers: dict[str, asyncio.TimerHandle] = {}
         self._states: dict[str, str] = {}  # last state asked of each device
         self._timings: dict[str, dict[str, float]] = {}
+        self._turn_log: deque[dict] = deque(maxlen=TURN_LOG_SIZE)  # finished turns, for the bench
+        self._timing_meta: dict[str, tuple[str, str]] = {}  # message id -> (room, trigger kind)
         self._bg: set[asyncio.Task] = set()
         self._timer_task: asyncio.Task | None = None
         self._watchdog: asyncio.Task | None = None
@@ -258,7 +261,8 @@ class HousemateAdapter(BasePlatformAdapter):
 
         from .core.control import HubServices, register_local_services
 
-        self.services = HubServices(store, registry, hub, self.timers, self.announcer, list(self.urls), self.fingerprint)
+        self.services = HubServices(store, registry, hub, self.timers, self.announcer, list(self.urls), self.fingerprint,
+                                    timings=self.recent_timings)
         register_local_services(self.services, self._loop)
         self.control = ControlServer(self.services, data_dir / "control.token", port=self.cfg.control_port)
         try:
@@ -455,6 +459,7 @@ class HousemateAdapter(BasePlatformAdapter):
         item = _Utterance(uuid.uuid4().hex, device_id, room, kind, bytes(utt.pcm),
                           float(getattr(utt, "ended_at", captured)), captured)
         self._timings[item.message_id] = {"endpoint": item.endpoint_at, "captured": captured}
+        self._timing_meta[item.message_id] = (room, kind)
         chat_id = self.router.chat_id_for(room)
         self._set_state(device_id, "thinking")
         if self.router.household_busy(chat_id):
@@ -572,6 +577,7 @@ class HousemateAdapter(BasePlatformAdapter):
                 cutoff = time.time() - 900
                 for mid in [m for m, t in self._timings.items() if t.get("captured", 0) < cutoff]:
                     self._timings.pop(mid, None)
+                    self._timing_meta.pop(mid, None)
             except Exception:
                 log.exception("housemate: watchdog step failed")
 
@@ -1472,6 +1478,13 @@ class HousemateAdapter(BasePlatformAdapter):
         base = marks["endpoint"]
         rel = {k: round(v - base, 3) for k, v in sorted(marks.items(), key=lambda kv: kv[1])}
         log.info("housemate timing %s %s", message_id, json.dumps(rel))
+        room, kind = self._timing_meta.get(message_id, (None, None))
+        self._turn_log.append({"message_id": message_id, "room": room, "kind": kind,
+                               "endpoint_at": round(base, 3), "stages": rel})
+
+    def recent_timings(self) -> list[dict]:
+        """Stage times of the last finished turns, oldest first (``hermes housemate bench``)."""
+        return list(self._turn_log)
 
 
 def _plain(text: str) -> str:

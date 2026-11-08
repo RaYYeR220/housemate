@@ -75,6 +75,7 @@ class HubServices:
     announcer: Announcer
     urls: list[str] = field(default_factory=list)  # LAN URLs satellites open, best first
     fingerprint: str | None = None  # SHA-256 of the hub's TLS certificate
+    timings: Callable[[], list[dict]] | None = None  # recent turns' stage times (the bench reads them)
 
 
 # --- in-process registration ------------------------------------------------------------------
@@ -383,6 +384,11 @@ async def _op_info(s: HubServices, a: dict) -> dict:
     }
 
 
+async def _op_timings(s: HubServices, a: dict) -> dict:
+    """Stage times of the last spoken turns (seconds after the end of the utterance)."""
+    return {"ok": True, "turns": list(s.timings()) if callable(s.timings) else []}
+
+
 _OPS: dict[str, Callable[[HubServices, dict], Awaitable[dict]]] = {
     "rooms": _op_rooms,
     "announce": _op_announce,
@@ -398,6 +404,7 @@ _OPS: dict[str, Callable[[HubServices, dict], Awaitable[dict]]] = {
     "room_remove": _op_room_remove,
     "room_group": _op_room_group,
     "info": _op_info,
+    "timings": _op_timings,
 }
 OPS: tuple[str, ...] = tuple(_OPS)
 

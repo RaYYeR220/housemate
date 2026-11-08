@@ -75,6 +75,9 @@ class HousemateClient:
     def revoke(self, device_id: str) -> dict:
         return self.call("revoke", {"device_id": device_id})
 
+    def timings(self) -> dict:
+        return self.call("timings")
+
     def info(self) -> dict:
         return self.call("info")
 
