@@ -402,3 +402,38 @@ async def test_cross_origin_ws_refused(env):
         assert info.value.status == 403
         ws = await http.ws_connect(env.hub.ws_url, origin=env.hub.url)
         await ws.close()
+
+
+# --- port clash and disconnects ---------------------------------------------------------------
+
+
+async def test_hub_port_clash_fails_loudly():
+    import socket
+
+    from housemate.core.hub import HubPortInUse
+
+    squatter = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    squatter.bind(("127.0.0.1", 0))
+    squatter.listen(1)
+    port = squatter.getsockname()[1]
+    try:
+        for host in ("0.0.0.0", "127.0.0.1"):
+            conn = sqlite3.connect(":memory:", check_same_thread=False)
+            hub = Hub(HousemateStore(conn), RoomRegistry(), host=host, port=port, cert=None, key=None,
+                      web_root=WEB_ROOT, tls=False)
+            with pytest.raises(HubPortInUse):
+                await hub.start()
+            await hub.stop()
+    finally:
+        squatter.close()
+
+
+async def test_disconnect_callback_fires_once_per_trusted_drop(env):
+    gone: list[str] = []
+    env.hub.on_disconnect(gone.append)
+    sat = await env.paired_sat(device_id="dev-office", room="Office")
+    gone.clear()  # paired_sat closed its (trusted) pairing socket first
+    await sat.close()
+    assert await _eventually(lambda: gone == ["dev-office"])
+    await asyncio.sleep(0.05)
+    assert gone == ["dev-office"]

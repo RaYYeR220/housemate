@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import os
 import re
 import socket
 import ssl
@@ -29,7 +30,7 @@ from .protocol import FRAME_BYTES, MAX_MESSAGE_BYTES, MIC_PCM, PLAY_PCM, SATELLI
 from .rooms import DEVICE_STATES, DeviceConn, RoomRegistry
 from .store import HousemateStore
 
-__all__ = ["Hub"]
+__all__ = ["Hub", "HubPortInUse", "bind_exclusive"]
 
 log = logging.getLogger(__name__)
 
@@ -57,6 +58,60 @@ _MIME = {
     ".woff2": "font/woff2",
     ".txt": "text/plain; charset=utf-8",
 }
+
+
+class HubPortInUse(OSError):
+    """Another program already listens on the hub's port."""
+
+
+def _loopback_answers(port: int, family: int) -> bool:
+    host = "::1" if family == socket.AF_INET6 else "127.0.0.1"
+    probe = socket.socket(family, socket.SOCK_STREAM)
+    probe.settimeout(0.3)
+    try:
+        return probe.connect_ex((host, port)) == 0
+    except OSError:
+        return False
+    finally:
+        probe.close()
+
+
+def bind_exclusive(host: str, port: int) -> socket.socket:
+    """A listening socket on ``host:port`` that no other program shares.
+
+    Windows lets a wildcard bind succeed while another program holds ``127.0.0.1:<port>`` (a
+    wrangler dev server on 8787 did exactly that): LAN phones would reach the hub but the PC's
+    own browser would reach the other program. So the socket takes SO_EXCLUSIVEADDRUSE there, a
+    wildcard bind first checks that nothing answers on loopback, and any clash raises
+    ``HubPortInUse`` instead of quietly sharing the port.
+    """
+    family = socket.AF_INET6 if ":" in (host or "") else socket.AF_INET
+    if port and host in ("", "0.0.0.0", "::") and _loopback_answers(port, family):
+        raise HubPortInUse(
+            98, f"housemate hub: port {port} is already in use on this computer; stop the other "
+            "program or set platforms.housemate.port to a free port"
+        )
+    sock = socket.socket(family, socket.SOCK_STREAM)
+    try:
+        if os.name == "nt":
+            exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+            if exclusive is not None:
+                sock.setsockopt(socket.SOL_SOCKET, exclusive, 1)
+        else:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind((host, port))
+        except OSError as exc:
+            raise HubPortInUse(
+                exc.errno,
+                f"housemate hub: {host or '0.0.0.0'}:{port} is already in use ({exc.strerror or exc}); "
+                "stop the other program or set platforms.housemate.port to a free port",
+            ) from exc
+        sock.listen(128)
+        return sock
+    except BaseException:
+        sock.close()
+        raise
 
 
 @dataclass(eq=False)
@@ -110,6 +165,7 @@ class Hub:
 
         self._audio_cbs: list[Callable[[str, bytes], None]] = []
         self._control_cbs: list[Callable[[str, dict], Awaitable[None] | None]] = []
+        self._disconnect_cbs: list[Callable[[str], None]] = []
         self._sessions: dict[str, _Session] = {}  # trusted, by device id
         self._waiting: dict[str, _Session] = {}  # waiting for approval, by code
         self._pending_by_ip: dict[str, dict[str, float]] = {}  # ip -> {code: expires_at}
@@ -140,8 +196,12 @@ class Hub:
         if self.tls:
             ssl_ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
             ssl_ctx.load_cert_chain(str(self._cert), str(self._key))
-        family = socket.AF_INET6 if ":" in (self.host or "") else socket.AF_INET
-        sock = socket.create_server((self.host, self.port), family=family)
+        try:
+            sock = bind_exclusive(self.host, self.port)
+        except BaseException:
+            await self._runner.cleanup()
+            self._runner = None
+            raise
         site = web.SockSite(self._runner, sock, ssl_context=ssl_ctx)
         await site.start()
         self.port = sock.getsockname()[1]
@@ -173,6 +233,10 @@ class Hub:
         keep them quick.
         """
         self._control_cbs.append(cb)
+
+    def on_disconnect(self, cb: Callable[[str], None]) -> None:
+        """``cb(device_id)`` when a trusted device's live connection goes away (or is revoked)."""
+        self._disconnect_cbs.append(cb)
 
     async def send_control(self, device_id: str, msg: dict) -> bool:
         """Send to a trusted, connected device. False if it is not there (never raises for that).
@@ -225,6 +289,7 @@ class Hub:
         if s is not None:
             self.rooms.detach(device_id)
             self._close_later(s, CLOSE_BAD_KEY, "device revoked")
+            self._disconnected(device_id)
         return existed
 
     def online_devices(self) -> list[str]:
@@ -476,6 +541,14 @@ class Hub:
         if s.authed and self._sessions.get(s.device_id) is s:
             del self._sessions[s.device_id]
             self.rooms.detach(s.device_id)
+            self._disconnected(s.device_id)
+
+    def _disconnected(self, device_id: str) -> None:
+        for cb in list(self._disconnect_cbs):
+            try:
+                cb(device_id)
+            except Exception:
+                log.exception("housemate: disconnect callback failed")
 
     def _close_later(self, s: _Session, code: int, reason: str) -> None:
         if s.ws.closed:
