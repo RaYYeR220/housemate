@@ -207,7 +207,12 @@ function mmss(sec) {
 
 function prettyWake(model) {
   if (!model) return null
-  return cap(String(model).replace(/_v[\d.]+$/i, '').replace(/[_-]+/g, ' '))
+  return String(model)
+    .replace(/_v[\d.]+$/i, '')
+    .replace(/[_-]+/g, ' ')
+    .split(' ')
+    .map(cap)
+    .join(' ')
 }
 
 function shortFingerprint(fp) {
@@ -397,16 +402,32 @@ function zoneAt(geo, x, y) {
 
 // ─────────────────────────────────────────────────────────────── theme colours (canvas)
 
+// Theme tokens can be expressions (color-mix(), var()) a canvas does not parse. The page's own
+// hidden probe element resolves each one through CSS; its computed colour is concrete.
 function parseColor(v) {
   v = (v || '').trim()
   let m = v.match(/^#([0-9a-f]{3,8})$/i)
   if (m) {
     let hex = m[1]
     if (hex.length <= 4) hex = hex.split('').map(c => c + c).join('')
-    return [parseInt(hex.slice(0, 2), 16), parseInt(hex.slice(2, 4), 16), parseInt(hex.slice(4, 6), 16)]
+    const a = hex.length >= 8 ? parseInt(hex.slice(6, 8), 16) / 255 : 1
+    return [parseInt(hex.slice(0, 2), 16), parseInt(hex.slice(2, 4), 16), parseInt(hex.slice(4, 6), 16), a]
   }
-  m = v.match(/^rgba?\(\s*([\d.]+)[ ,]+([\d.]+)[ ,]+([\d.]+)/i)
-  return m ? [+m[1], +m[2], +m[3]] : null
+  m = v.match(/^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)(?:[\s,/]+([\d.]+%?))?\s*\)$/i)
+  if (m) return [+m[1], +m[2], +m[3], alphaOf(m[4])]
+  m = v.match(/^color\(\s*srgb\s+([-\d.e]+)\s+([-\d.e]+)\s+([-\d.e]+)(?:\s*\/\s*([\d.]+%?))?\s*\)$/i)
+  if (m) return [+m[1] * 255, +m[2] * 255, +m[3] * 255, alphaOf(m[4])]
+  return null
+}
+
+function alphaOf(a) {
+  if (a === undefined || a === '') return 1
+  return a.endsWith('%') ? parseFloat(a) / 100 : +a
+}
+
+function cssColor(rgba) {
+  const [r, g, b, a] = rgba.map((x, i) => (i < 3 ? Math.round(Math.max(0, Math.min(255, x))) : Math.max(0, Math.min(1, x))))
+  return `rgba(${r},${g},${b},${a})`
 }
 
 function luminance(rgb) {
@@ -417,36 +438,42 @@ function luminance(rgb) {
   return 0.2126 * f(rgb[0]) + 0.7152 * f(rgb[1]) + 0.0722 * f(rgb[2])
 }
 
-function readColors(el) {
-  const cs = getComputedStyle(el)
-  const v = name => cs.getPropertyValue(name).trim()
-  const c = {
-    accent: v('--ui-accent'),
-    s1: v('--ui-stroke-primary'),
-    s2: v('--ui-stroke-secondary'),
-    s3: v('--ui-stroke-tertiary'),
-    s4: v('--ui-stroke-quaternary'),
-    t1: v('--ui-text-primary'),
-    t2: v('--ui-text-secondary'),
-    t3: v('--ui-text-tertiary'),
-    t4: v('--ui-text-quaternary'),
-    green: v('--ui-green'),
-    yellow: v('--ui-yellow'),
-    hover: v('--ui-row-hover-background'),
-    card: v('--ui-bg-card'),
-    bg: v('--ui-bg-chrome') || v('--ui-bg-editor')
+const TOKENS = {
+  accent: '--ui-accent',
+  s1: '--ui-stroke-primary',
+  s2: '--ui-stroke-secondary',
+  s3: '--ui-stroke-tertiary',
+  s4: '--ui-stroke-quaternary',
+  t1: '--ui-text-primary',
+  t2: '--ui-text-secondary',
+  t3: '--ui-text-tertiary',
+  t4: '--ui-text-quaternary',
+  green: '--ui-green',
+  yellow: '--ui-yellow',
+  hover: '--ui-row-hover-background',
+  card: '--ui-bg-card',
+  bg: '--ui-bg-chrome'
+}
+
+function readColors(probe) {
+  const c = {}
+  const raw = {}
+  for (const [key, name] of Object.entries(TOKENS)) {
+    probe.style.color = `var(${name})`
+    const value = getComputedStyle(probe).color
+    const rgba = parseColor(value)
+    raw[key] = rgba
+    c[key] = rgba ? cssColor(rgba) : value
   }
+  probe.style.color = ''
   // A blue accent on a blue ground (nous-alt dark) all but disappears: draw "live" in the
   // primary text colour when the accent is too close to the page.
-  const a = parseColor(c.accent)
-  const b = parseColor(c.bg)
-  let live = c.accent
-  if (a && b) {
-    const la = luminance(a)
-    const lb = luminance(b)
-    if ((Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05) < 2.6) live = c.t1
+  c.live = c.accent
+  if (raw.accent && raw.bg) {
+    const la = luminance(raw.accent)
+    const lb = luminance(raw.bg)
+    if ((Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05) < 2.6) c.live = c.t1
   }
-  c.live = live
   return c
 }
 
@@ -733,6 +760,7 @@ const CSS = `
 .hm-narrow .hm-ear{height:520px}
 .hm-ear canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
 .hm-layer{position:absolute;inset:0;pointer-events:none}
+.hm-probe{position:absolute;width:0;height:0;overflow:hidden;visibility:hidden}
 .hm-layer > *{pointer-events:auto}
 .hm-zn{position:absolute;pointer-events:none!important;transition:left .5s,top .5s,width .5s,height .5s}
 .hm-zn-head{position:absolute;left:12px;top:10px;right:12px}
@@ -762,7 +790,10 @@ const CSS = `
 .hm-chip{display:flex;align-items:center;gap:8px;min-width:0}
 .hm-grab{width:22px;height:22px;display:grid;place-items:center;cursor:grab;border-radius:4px;flex:none;touch-action:none}
 .hm-grab:hover{background:var(--chrome-action-hover)}
-.hm-grab i{width:8px;height:8px;border-radius:50%;background:var(--ui-yellow);display:block}
+.hm-grab i{position:relative;width:8px;height:8px;border-radius:50%;background:var(--ui-yellow);display:block}
+.hm-grab i::after{content:'';position:absolute;inset:-1px;border-radius:50%;border:1px solid var(--ui-yellow);animation:hm-wait 2s ease-out infinite}
+.hm-grab.is-placed i::after{border-color:var(--ui-green)}
+@keyframes hm-wait{from{transform:scale(1);opacity:.7}to{transform:scale(3.2);opacity:0}}
 .hm-grab.is-placed i{background:var(--ui-green)}
 .hm-chip .hm-nm{color:var(--ui-text-primary);font-weight:500;white-space:nowrap;cursor:grab}
 .hm-hint{min-width:0;color:var(--ui-text-quaternary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -789,7 +820,7 @@ const CSS = `
 .hm-facts dd{margin:0;color:var(--ui-text-primary);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .hm-note{font-size:12px;color:var(--ui-text-tertiary);line-height:1.45;margin-top:8px}
 .hm-center{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;min-height:360px;color:var(--ui-text-tertiary);font-size:13px;text-align:center}
-@media (prefers-reduced-motion: reduce){.hm-zn,.hm-dv,.hm-own,.hm-legend{transition:none}}
+@media (prefers-reduced-motion: reduce){.hm-zn,.hm-dv,.hm-own,.hm-legend{transition:none}.hm-grab i::after{animation:none;opacity:0}}
 `
 
 // ─────────────────────────────────────────────────────────────── components
@@ -992,6 +1023,7 @@ function deny(p) {
 function Earshot({ data, mode }) {
   const boxRef = useRef(null)
   const cvRef = useRef(null)
+  const probeRef = useRef(null)
   const size = useSize(boxRef)
   const { themeName, resolvedMode } = useTheme()
   const pulses = useValue(store.$pulses)
@@ -1020,7 +1052,7 @@ function Earshot({ data, mode }) {
   useEffect(() => {
     const cv = cvRef.current
     if (!cv) return undefined
-    m.colors = readColors(cv)
+    if (probeRef.current) m.colors = readColors(probeRef.current)
     const draw = now => {
       const mm = model.current
       const tNow = now / 1000
@@ -1037,8 +1069,14 @@ function Earshot({ data, mode }) {
     }
   }, [])
   useEffect(() => {
-    if (cvRef.current) m.colors = readColors(cvRef.current)
-    if (loopRef.current) loopRef.current.wake()
+    // The provider repaints the tokens in its own effect (after ours): read again a beat later.
+    const read = () => {
+      if (probeRef.current) model.current.colors = readColors(probeRef.current)
+      if (loopRef.current) loopRef.current.wake()
+    }
+    read()
+    const id = setTimeout(read, 80)
+    return () => clearTimeout(id)
   }, [themeName, resolvedMode])
   useEffect(() => {
     m.geoTarget = geo
@@ -1100,9 +1138,22 @@ function Earshot({ data, mode }) {
       let lead = ids[0]
       for (const id of ids) if (geo.D[id].x < geo.D[lead].x) lead = id
       const c = geo.D[lead]
-      const ang = (115 * Math.PI) / 180
-      const lx = Math.max(90, Math.min(geo.W - 90, c.x + Math.cos(ang) * c.r))
-      const ly = Math.min(geo.tray.y - 20, c.y + Math.sin(ang) * c.r)
+      // On the lead circle, where it stays clearest of every device's name label.
+      const labels = Object.values(geo.D).map(d => ({ x: d.x, y: d.y + 20 }))
+      let lx = 0
+      let ly = 0
+      let best = -1
+      for (const deg of [115, 140, 90, 165, 65, 195]) {
+        const ang = (deg * Math.PI) / 180
+        const x = Math.max(90, Math.min(geo.W - 90, c.x + Math.cos(ang) * c.r))
+        const y = Math.min(geo.tray.y - 20, c.y + Math.sin(ang) * c.r)
+        const room = Math.min(...labels.map(l => Math.hypot((l.x - x) / 2.2, l.y - y)))
+        if (room > best + 4) {
+          best = room
+          lx = x
+          ly = y
+        }
+      }
       layer.push(
         jsx('div', { className: 'hm-grp', style: { left: lx + 'px', top: ly + 'px' }, children: `Within earshot · ${roomsIn.map(r => roomName(data, r)).join(' + ')}` }, 'g' + ids.join())
       )
@@ -1121,6 +1172,7 @@ function Earshot({ data, mode }) {
     style: { '--hm-live': (m.colors && m.colors.live) || 'var(--ui-accent)' },
     children: [
       jsx('canvas', { ref: cvRef, 'aria-hidden': true }),
+      jsx('span', { ref: probeRef, 'aria-hidden': true, className: 'hm-probe' }),
       jsx('div', { className: 'hm-layer', children: layer }),
       drag ? jsx('div', { className: 'hm-dragcover' }) : null,
       drag ? jsx('div', { className: 'hm-dragdot', style: { left: drag.cx + 'px', top: drag.cy + 'px' } }) : null
@@ -1252,7 +1304,7 @@ function AddDevice({ data }) {
               jsx('div', { className: 'hm-label', children: 'Hub address' }),
               jsxs('div', {
                 className: 'hm-row',
-                children: [jsx('span', { className: 'hm-mono', children: hub.url }), jsx(CopyButton, { text: hub.url, label: 'Copy address', buttonSize: 'icon-xs', buttonVariant: 'ghost' })]
+                children: [jsx('span', { className: 'hm-mono', children: hub.url }), jsx(CopyButton, { text: hub.url, label: 'Copy address', appearance: 'icon', buttonSize: 'icon-xs', buttonVariant: 'ghost' })]
               })
             ]
           })
@@ -1265,7 +1317,7 @@ function AddDevice({ data }) {
                 className: 'hm-row',
                 children: [
                   jsx('span', { className: 'hm-mono', title: hub.fingerprint, children: shortFingerprint(hub.fingerprint) }),
-                  jsx(CopyButton, { text: hub.fingerprint, label: 'Copy fingerprint', buttonSize: 'icon-xs', buttonVariant: 'ghost' })
+                  jsx(CopyButton, { text: hub.fingerprint, label: 'Copy fingerprint', appearance: 'icon', buttonSize: 'icon-xs', buttonVariant: 'ghost' })
                 ]
               })
             ]
@@ -1370,7 +1422,11 @@ function RoomsPage() {
       const saved = result.persisted
         ? 'Saved in config.yaml, so the next gateway start keeps it.'
         : `Not saved (${result.persist_error || 'config.yaml not writable'}): the next gateway start goes back to the configured mode.`
-      setModeNote(`${label} mode applies from the next question; a running answer finishes as it was. ${saved}`)
+      setModeNote({
+        text: `${label} mode applies from the next question; a running answer finishes as it was. ${saved}`,
+        at: Date.now(),
+        sticky: !result.persisted
+      })
     }
   }
 
@@ -1419,7 +1475,10 @@ function RoomsPage() {
       }),
       jsx('p', {
         className: 'hm-cap',
-        children: modeNote || 'Circles show how far each device hears. Overlapping devices settle who answers.'
+        children:
+          modeNote && (modeNote.sticky || Date.now() - modeNote.at < 12000)
+            ? modeNote.text
+            : 'Circles show how far each device hears. Overlapping devices settle who answers.'
       }),
       jsxs('div', {
         className: 'hm-body',
