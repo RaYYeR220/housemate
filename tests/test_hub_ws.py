@@ -437,3 +437,36 @@ async def test_disconnect_callback_fires_once_per_trusted_drop(env):
     assert await _eventually(lambda: gone == ["dev-office"])
     await asyncio.sleep(0.05)
     assert gone == ["dev-office"]
+
+
+def test_server_tls_context_ignores_an_injected_client_sslcontext(tmp_path, monkeypatch):
+    """Hermes injects truststore's client-only SSLContext into ``ssl``; the hub must not serve with it."""
+    import ssl
+
+    from housemate.core.hub import server_ssl_context
+
+    class InjectedContext(ssl.SSLContext):  # what truststore.inject_into_ssl() does
+        pass
+
+    cert, key, _ = ensure_self_signed_cert(tmp_path, ["localhost", "127.0.0.1"])
+    monkeypatch.setattr(ssl, "SSLContext", InjectedContext)
+    ctx = server_ssl_context(cert, key)
+    assert type(ctx).__module__ == "ssl" and type(ctx).__name__ == "SSLContext"
+    assert ctx.minimum_version >= ssl.TLSVersion.TLSv1_2
+
+
+async def test_hub_serves_tls(tmp_path):
+    import ssl
+
+    cert, key, _ = ensure_self_signed_cert(tmp_path, ["localhost", "127.0.0.1"])
+    e = await _make_env(cert=cert, key=key, tls=True)
+    try:
+        client = ssl.create_default_context()
+        client.check_hostname, client.verify_mode = False, ssl.CERT_NONE
+        reader, writer = await asyncio.open_connection("127.0.0.1", e.hub.port, ssl=client)
+        writer.write(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+        head = await asyncio.wait_for(reader.read(64), 5)
+        writer.close()
+        assert head.startswith(b"HTTP/1.1 200")
+    finally:
+        await e.hub.stop()

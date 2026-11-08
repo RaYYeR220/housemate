@@ -30,7 +30,7 @@ from .protocol import FRAME_BYTES, MAX_MESSAGE_BYTES, MIC_PCM, PLAY_PCM, SATELLI
 from .rooms import DEVICE_STATES, DeviceConn, RoomRegistry
 from .store import HousemateStore
 
-__all__ = ["Hub", "HubPortInUse", "bind_exclusive"]
+__all__ = ["Hub", "HubPortInUse", "bind_exclusive", "server_ssl_context"]
 
 log = logging.getLogger(__name__)
 
@@ -58,6 +58,22 @@ _MIME = {
     ".woff2": "font/woff2",
     ".txt": "text/plain; charset=utf-8",
 }
+
+
+def server_ssl_context(cert: Path, key: Path) -> ssl.SSLContext:
+    """A TLS *server* context from the standard library's own ``SSLContext``.
+
+    Hermes swaps ``ssl.SSLContext`` for truststore's client-side class at start-up (system trust
+    store for outgoing HTTPS). That class verifies the *peer's* certificate after every handshake,
+    so as a server it drops each satellite right after the request. Walk past it to the stdlib class
+    (and leave its Python-level property setters alone: with the class swapped they recurse; the
+    server protocol already defaults to TLS 1.2+).
+    """
+    cls = next((c for c in ssl.SSLContext.__mro__ if c.__module__ == "ssl" and c.__name__ == "SSLContext"),
+               ssl.SSLContext)
+    ctx = cls(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(str(cert), str(key))
+    return ctx
 
 
 class HubPortInUse(OSError):
@@ -194,8 +210,7 @@ class Hub:
         await self._runner.setup()
         ssl_ctx = None
         if self.tls:
-            ssl_ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-            ssl_ctx.load_cert_chain(str(self._cert), str(self._key))
+            ssl_ctx = server_ssl_context(self._cert, self._key)
         try:
             sock = bind_exclusive(self.host, self.port)
         except BaseException:
