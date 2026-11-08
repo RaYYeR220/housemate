@@ -195,5 +195,6 @@ def apply_answer(book: AnswerBook, kwargs: dict) -> dict | None:
         except Exception:
             log.exception("housemate: applying a spoken %s answer failed", entry.kind)
             note = "the answer could not be applied"
-    log.info("housemate: spoken answer %r -> %s", transcript[:80], note)
+    log.info("housemate: spoken %s answer -> %s", entry.kind if entry is not None else "late", note)
+    log.debug("housemate: spoken answer transcript %r", transcript[:80])
     return {"action": "block", "message": f"(housemate: {note})"}

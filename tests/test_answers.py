@@ -130,3 +130,16 @@ def test_newest_entry_of_the_same_rank_wins():
     book.add(entry(clock, a, device="dev-k", kind="stop"))
     book.add(entry(clock, b, device="dev-k", kind="stop"))
     assert book.for_device("dev-k").token == b
+
+
+def test_spoken_answer_transcript_is_not_logged_at_info(caplog):
+    """Review L12: what was said is DEBUG only."""
+    import logging
+
+    clock = Clock()
+    book = AnswerBook(clock)
+    token = new_token()
+    book.add(entry(clock, token))
+    with caplog.at_level(logging.INFO, logger="housemate.core.answers"):
+        apply_answer(book, {"platform": "housemate", "user_message": f'{make_marker(token)}\n\n[New message]\n"my secret words"'})
+    assert caplog.records and all("secret" not in r.getMessage() for r in caplog.records)

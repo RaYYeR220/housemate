@@ -14,6 +14,7 @@ __all__ = ["CERT_FILE", "KEY_FILE", "ensure_self_signed_cert", "hub_urls", "lan_
 CERT_FILE = "hub-cert.pem"
 KEY_FILE = "hub-key.pem"
 VALIDITY_DAYS = 825
+MAX_SANS = 48  # names and addresses kept in the certificate (new ones first)
 RENEW_BEFORE_DAYS = 30
 
 
@@ -147,6 +148,28 @@ def _fingerprint(cert) -> str:
     return cert.fingerprint(hashes.SHA256()).hex(":").upper()
 
 
+def _san_names(cert) -> list[str]:
+    from cryptography import x509
+
+    try:
+        ext = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+    except x509.ExtensionNotFound:
+        return []
+    return [str(ip) for ip in ext.get_values_for_type(x509.IPAddress)] + list(ext.get_values_for_type(x509.DNSName))
+
+
+def _load_key(key_path: Path):
+    """The hub's existing EC key, reused when the certificate is renewed or gains a name."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    try:
+        key = serialization.load_pem_private_key(key_path.read_bytes(), password=None)
+    except (OSError, ValueError, TypeError):
+        return None
+    return key if isinstance(key, ec.EllipticCurvePrivateKey) else None
+
+
 def _covered(cert, hosts: list[str]) -> bool:
     from cryptography import x509
 
@@ -176,16 +199,19 @@ def ensure_self_signed_cert(data_dir: Path, hosts: list[str]) -> tuple[Path, Pat
     cert_path, key_path = data_dir / CERT_FILE, data_dir / KEY_FILE
     now = dt.datetime.now(dt.timezone.utc)
 
+    known: list[str] = []  # names the current certificate covers: kept, so a VPN toggle is no flip-flop
     if cert_path.exists() and key_path.exists():
         try:
             cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
             fresh = cert.not_valid_after_utc - now > dt.timedelta(days=RENEW_BEFORE_DAYS)
             if fresh and _covered(cert, hosts):
                 return cert_path, key_path, _fingerprint(cert)
+            known = _san_names(cert)
         except ValueError:
             pass  # unreadable: regenerate
 
-    key = ec.generate_private_key(ec.SECP256R1())
+    key = _load_key(key_path) or ec.generate_private_key(ec.SECP256R1())
+    hosts = list(dict.fromkeys([*hosts, *known]))[:MAX_SANS]
     san: list[x509.GeneralName] = []
     for h in hosts:
         try:

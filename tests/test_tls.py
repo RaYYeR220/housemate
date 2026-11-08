@@ -126,3 +126,17 @@ def test_config_advertise_host():
     assert HousemateConfig.from_extra({"advertise_host": " 192.168.0.17 "}).advertise_host == "192.168.0.17"
     bad = HousemateConfig.from_extra({"advertise_host": "http://x/<y>"})
     assert bad.advertise_host == "" and bad.warnings
+
+
+def test_cert_keeps_old_addresses_so_a_vpn_toggle_does_not_flip_it(tmp_path):
+    """Review L11: a new address adds to the certificate (same key); switching back is covered, so the
+    phones do not see a new certificate every time a VPN or adapter comes and goes."""
+    first = ensure_self_signed_cert(tmp_path, ["192.168.1.20", "localhost"])
+    key_before = first[1].read_bytes()
+    second = ensure_self_signed_cert(tmp_path, ["192.168.1.20", "100.80.1.2", "localhost"])
+    assert second[2] != first[2]
+    assert second[1].read_bytes() == key_before
+    third = ensure_self_signed_cert(tmp_path, ["192.168.1.20", "localhost"])  # VPN off again
+    assert third[2] == second[2]
+    _, sans = _sans(third[0])
+    assert {"192.168.1.20", "100.80.1.2", "localhost"} <= sans

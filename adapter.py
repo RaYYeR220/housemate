@@ -270,11 +270,10 @@ class HousemateAdapter(BasePlatformAdapter):
             log.warning("housemate: %s", warning)
         from plugins.plugin_storage import plugin_data_dir, plugin_db
 
-        from .core.control import ControlPortInUse, ControlServer
         from .core.hub import Hub, HubPortInUse
         from .core.rooms import RoomRegistry
         from .core.store import HousemateStore
-        from .core.tls import ensure_self_signed_cert, hub_urls, lan_hosts
+        from .core.tls import ensure_self_signed_cert, lan_hosts
 
         self._loop = asyncio.get_running_loop()
         data_dir = Path(plugin_data_dir(PLATFORM_NAME))
@@ -300,7 +299,27 @@ class HousemateAdapter(BasePlatformAdapter):
             self._set_fatal_error("hub_failed", f"housemate hub could not start: {exc}", retryable=True)
             return False
 
+        try:
+            await self._start_services(store, registry, hub, data_dir)
+        except Exception as exc:
+            # The hub is listening: free the port, or a retry fails with HubPortInUse (not retryable).
+            log.exception("housemate: starting the services around the hub failed")
+            await self._stop_partial(hub)
+            self._set_fatal_error("hub_failed", f"housemate could not start: {exc}", retryable=True)
+            return False
+        self._mark_connected(listener_base=hub.url)
+        log.info("housemate: hub on %s (open it on a phone or laptop to add a room speaker)",
+                 ", ".join(self.urls[:3]))
+        return True
+
+    async def _start_services(self, store: Any, registry: Any, hub: Any, data_dir: Path) -> None:
+        from .core.control import ControlPortInUse, ControlServer, HubServices, register_local_services
+        from .core.tls import hub_urls
+
         scheme = "https" if self.cfg.tls else "http"
+        if not self.cfg.tls:
+            log.warning("housemate: tls is off: device keys and microphone audio cross the LAN in clear "
+                        "text, and phone browsers only allow the microphone on https. Use it only for testing.")
         self.urls = hub_urls(scheme, hub.port, self.cfg.advertise_host)
         self._wire(store, registry, hub)
         self._seed_rooms()
@@ -308,9 +327,6 @@ class HousemateAdapter(BasePlatformAdapter):
         warning = self._access_warning()
         if warning:
             log.warning("housemate: %s", warning)
-
-        from .core.control import HubServices, register_local_services
-
         self.services = HubServices(store, registry, hub, self.timers, self.announcer, list(self.urls), self.fingerprint,
                                     timings=self.recent_timings, desk=self.desk, mode=lambda: self.router.mode,
                                     set_mode=self._set_mode)
@@ -326,10 +342,31 @@ class HousemateAdapter(BasePlatformAdapter):
         self._timer_task = asyncio.create_task(self.timers.run(), name="housemate-timers")
         self._watchdog = asyncio.create_task(self._watch(), name="housemate-watchdog")
         self._spawn(self._load_models(data_dir))
-        self._mark_connected(listener_base=hub.url)
-        log.info("housemate: hub on %s (open it on a phone or laptop to add a room speaker)",
-                 ", ".join(self.urls[:3]))
-        return True
+
+    async def _stop_partial(self, hub: Any) -> None:
+        """Undo a half-done start: background tasks, the control API, the in-process registration, the hub."""
+        from .core.control import unregister_local_services
+
+        for task in (self._watchdog, self._timer_task):
+            if task is not None:
+                task.cancel()
+        self._watchdog = self._timer_task = None
+        if self._feed is not None:
+            self._feed.close()
+            self._feed = None
+        if self.services is not None:
+            with contextlib.suppress(Exception):
+                unregister_local_services(self.services)
+        if self.control is not None:
+            with contextlib.suppress(Exception):
+                await self.control.stop()
+            self.control = None
+        with contextlib.suppress(Exception):
+            await hub.stop()
+        if self._db_conn is not None:
+            with contextlib.suppress(Exception):
+                self._db_conn.close()
+            self._db_conn = None
 
     def _wire(self, store: Any, registry: Any, hub: Any, *, timers: Any = None, announcer: Any = None) -> None:
         """Connect the hub's callbacks and build the timer and announcement services."""
@@ -613,8 +650,9 @@ class HousemateAdapter(BasePlatformAdapter):
     async def _dispatch(self, chat_id: str, item: _Utterance) -> None:
         try:
             path = await self._cache_audio(pcm_to_wav(item.pcm), ".wav")
-            room_name = self._room_name(item.room)
-            device_name = self._device_name(item.device_id)
+            # Names are set by the devices themselves and reach the system prompt: flatten them.
+            room_name = _safe_label(self._room_name(item.room)) or "room"
+            device_name = _safe_label(self._device_name(item.device_id))
             source = self.build_source(
                 chat_id=chat_id,
                 chat_name="Household" if chat_id == HOUSEHOLD_CHAT else room_name,
@@ -1484,7 +1522,7 @@ class HousemateAdapter(BasePlatformAdapter):
                 choice = parse_yes_no(transcript)
                 if choice is None:
                     loop.call_soon_threadsafe(self._reprompt, prompt.id)
-                    return f"not an approve/deny answer: {transcript[:60]!r}"
+                    return "not an approve/deny answer"
                 try:
                     resolved = self._resolve_approval_card(prompt, choice)
                 except Exception:
@@ -1504,7 +1542,7 @@ class HousemateAdapter(BasePlatformAdapter):
                 pick = parse_choice(transcript, prompt.choices)
                 if pick is None:
                     loop.call_soon_threadsafe(self._reprompt, prompt.id)
-                    return f"no choice matched {transcript[:60]!r}"
+                    return "no choice matched"
             else:
                 pick = transcript.strip()
                 if not pick:
@@ -1516,7 +1554,7 @@ class HousemateAdapter(BasePlatformAdapter):
                 log.exception("housemate: resolving the clarify prompt failed")
                 ok = False
             loop.call_soon_threadsafe(self._clarify_done, prompt.id, pick, ok)
-            return f"clarify -> {pick!r} ({'resolved' if ok else 'already closed'})"
+            return f"clarify answered ({'resolved' if ok else 'already closed'})"
 
         ttl = APPROVAL_ANSWER_TTL_S if prompt.kind == "approval" else 3600.0
         self.book.drop(key=prompt.id)
@@ -1663,7 +1701,7 @@ class HousemateAdapter(BasePlatformAdapter):
                 loop.call_soon_threadsafe(self._stop_ring, room)
                 return "stopped the ring"
             loop.call_soon_threadsafe(self._rearm_stop, room, device_id)
-            return f"not a stop: {transcript[:60]!r}"
+            return "not a stop"
 
         self.book.drop(kind="stop", device_id=device_id)
         self.book.add(answers.PendingAnswer(
@@ -1872,6 +1910,14 @@ class HousemateAdapter(BasePlatformAdapter):
     def recent_timings(self) -> list[dict]:
         """Stage times of the last finished turns, oldest first (``hermes housemate bench``)."""
         return list(self._turn_log)
+
+
+_UNSAFE_LABEL = re.compile(r"[^\w .,'&+()-]+")
+
+
+def _safe_label(text: str, limit: int = 48) -> str:
+    """A device or room name as plain words: no newlines, markdown or other structure, short."""
+    return " ".join(_UNSAFE_LABEL.sub(" ", str(text or "")).split())[:limit].strip()
 
 
 def _hermes_approval_timeout() -> float:

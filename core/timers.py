@@ -4,8 +4,9 @@ Timers live in the store's ``timers`` table (``due_at`` is UTC epoch seconds) an
 ``pending -> ringing -> done | stopped | cancelled`` (or straight ``pending -> cancelled``).
 The ``pending -> ringing`` step is a compare-and-set in SQLite that happens *before* anyone is
 told, so a timer rings at most once, also across restarts and a crash mid-ring:
-``restore()`` rings overdue pending timers once (``missed=True``) and retires rings left over
-from a previous process without ringing them again.
+``restore()`` rings overdue pending timers once (``missed=True``), retires ones more than an hour
+overdue without ringing (``missed_while_offline``), and retires rings left over from a previous
+process without ringing them again.
 
 While a timer rings, ``RingController`` plays the chime and speaks the label in its room every
 20 s until someone stops it or 3 minutes pass. Time comes only from the injected ``clock``
@@ -48,6 +49,7 @@ KINDS = ("timer", "alarm")
 RING_EVERY_S = 20.0  # chime + spoken label this often while ringing
 RING_MAX_S = 180.0  # then it stops by itself
 MISSED_AFTER_S = 60.0  # a tick this late (PC asleep, loop blocked) counts as missed
+STALE_AFTER_S = 3600.0  # at start-up, a timer this overdue is retired silently instead of rung
 MAX_TIMER_S = 7 * 24 * 3600
 MAX_LABEL = 64
 
@@ -384,6 +386,7 @@ class TimerService:
         self.tick_s = tick_s
         self._bg = _Background()
         self._restored = False
+        self.missed_while_offline: list[Timer] = []  # retired by restore() without ringing
         self.ringer = RingController(
             clock,
             play_chime=play_chime,
@@ -471,6 +474,13 @@ class TimerService:
         for row in self._store.list_timers(states=("ringing",)):
             if self.ringer.find(row.id) is None and self._store.transition_timer(row.id, ("ringing",), "done"):
                 changed.add(row.room)
+        for row in self._store.list_timers(states=("pending",), due_before=now - STALE_AFTER_S):
+            # Hours late (a test timer from yesterday): ringing it now, maybe at 3 a.m., helps nobody.
+            if self._store.transition_timer(row.id, ("pending",), "done", fired_at=now):
+                changed.add(row.room)
+                self.missed_while_offline.append(self._timer(replace(row, state="done", fired_at=now), now, missed=True))
+                log.info("housemate: the %s %s in %s was due %.0f min ago while the hub was off; not ringing it",
+                         row.kind, row.id, row.room, (now - row.due_at) / 60)
         rung = self._fire_due(now, missed_after=-math.inf)
         changed.update(t.room for t in rung)
         self._restored = True

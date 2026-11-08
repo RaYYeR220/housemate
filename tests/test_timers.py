@@ -176,6 +176,25 @@ async def test_timer_overdue_after_restart_rings_once(conn, clock):
     assert first.rings == []
 
 
+async def test_restore_retires_long_overdue_timers_without_ringing(conn, clock):
+    """Review L8: a test timer from hours ago must not ring "finished while I was offline" at the
+    next start (3 a.m., mid-demo). Recently missed ones still ring once."""
+    svc1 = make_service(HousemateStore(conn), clock, Recorder())
+    stale = svc1.add("kitchen", seconds=60, label="test")
+    recent = svc1.add("kitchen", seconds=3 * 3600 - 1800, label="pasta")
+    await svc1.drain()
+    del svc1
+    clock.advance(3 * 3600)
+    rec = Recorder()
+    svc2 = make_service(HousemateStore(conn), clock, rec)
+    assert [r.id for r in svc2.restore(clock())] == [recent.id]
+    await svc2.drain()
+    assert [r.id for r in rec.rings] == [recent.id]
+    assert all("test" not in text for _, text in rec.spoken)
+    assert HousemateStore(conn).get_timer(stale.id).state == "done"
+    assert [t.id for t in svc2.missed_while_offline] == [stale.id]
+
+
 def test_restore_before_the_loop_runs_rings_on_first_tick(store, clock, rec):
     svc = make_service(store, clock, rec)
     t = svc.add("kitchen", seconds=5, label="tea")  # no event loop yet
