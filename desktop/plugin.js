@@ -173,7 +173,6 @@ function createStore(ctx) {
     refresh,
     act,
     pulse,
-    approvedOnce: false,
     pageOpen() {
       pageViews += 1
       refresh()
@@ -819,6 +818,8 @@ const CSS = `
 .hm-facts dt{color:var(--ui-text-tertiary)}
 .hm-facts dd{margin:0;color:var(--ui-text-primary);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .hm-note{font-size:12px;color:var(--ui-text-tertiary);line-height:1.45;margin-top:8px}
+.hm-warn{font-size:11px;color:var(--ui-yellow)}
+.hm-code-in{width:9em;padding:6px 8px;border-radius:6px;border:1px solid var(--ui-stroke-quaternary);background:var(--ui-bg-chrome);color:var(--ui-text-primary);font-family:var(--font-mono,ui-monospace,monospace);font-size:18px;letter-spacing:.12em;font-variant-numeric:tabular-nums}
 .hm-center{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;min-height:360px;color:var(--ui-text-tertiary);font-size:13px;text-align:center}
 @media (prefers-reduced-motion: reduce){.hm-zn,.hm-dv,.hm-own,.hm-legend{transition:none}.hm-grab i::after{animation:none;opacity:0}}
 `
@@ -973,7 +974,9 @@ function Tray({ geo, data, onGrab }) {
               children: jsx('i', {})
             }),
             jsx('span', { className: 'hm-nm', onPointerDown: grab, children: name }),
-            it.kind === 'pending' ? jsx('span', { className: 'hm-mono', children: fmtCode(it.p.code) }) : null,
+            it.kind === 'pending' && (it.p.repair || it.p.name_taken)
+              ? jsx('span', { className: 'hm-warn', title: pairWarning(it.p), children: it.p.repair ? 're-pair' : 'same name' })
+              : null,
             it.kind === 'pending'
               ? jsx(Button, { variant: 'secondary', size: 'xs', onClick: () => approve(it.p, it.p.wants || null, data), children: 'Approve' })
               : null,
@@ -991,27 +994,39 @@ function Tray({ geo, data, onGrab }) {
   return jsx('div', { className: 'hm-tray', style: { left: tr.x + 'px', top: tr.y + 'px', width: tr.w + 'px', height: tr.h + 'px' }, children })
 }
 
-function fmtCode(code) {
-  const c = String(code || '')
-  return c.length === 6 ? `${c.slice(0, 3)} ${c.slice(3)}` : c
-}
-
 let confirmSetter = null
 
+// The request's name and room come from the device itself, and anything on the LAN can ask: the owner
+// approves by typing the 6-digit code shown on the device in their hand, never by a click on a row.
+function pairWarning(p) {
+  if (p.repair) return `A device with this id is already paired: approving gives the key to this request and disconnects the one that has it now. `
+  if (p.name_taken) return `A paired device already has this name. `
+  return ''
+}
+
 function approve(p, room, data) {
-  const go = () => store.act('pair_approve', room ? { code: p.code, room } : { code: p.code })
-  if (store.approvedOnce || !confirmSetter) {
-    go()
-    return
-  }
+  if (!confirmSetter) return
   const where = room ? roomName(data, room) || room : null
+  const typed = { value: '' }
   confirmSetter({
     title: where ? `Add ${p.name} to ${where}?` : `Add ${p.name}?`,
-    description: `Check that the device shows ${fmtCode(p.code)}. It will listen for the wake word${where ? ` and answer in ${where}` : ''}.`,
+    description: `${pairWarning(p)}Type the 6-digit code shown on the device. It will listen for the wake word${where ? ` and answer in ${where}` : ''}.`,
     confirmLabel: 'Add device',
+    body: jsx('input', {
+      className: 'hm-code-in',
+      inputMode: 'numeric',
+      autoComplete: 'off',
+      autoFocus: true,
+      maxLength: 7,
+      placeholder: '000 000',
+      'aria-label': 'Code shown on the device',
+      onChange: ev => { typed.value = ev.target.value }
+    }),
     onConfirm: async () => {
-      store.approvedOnce = true
-      await go()
+      const code = String(typed.value || '').replace(/\D/g, '')
+      if (code.length !== 6) throw new Error('Type the 6 digits shown on the device.')
+      const result = await store.act('pair_approve', room ? { code, room } : { code })
+      if (!result || result.ok === false) throw new Error((result && result.error) || 'No device is waiting with that code.')
     }
   })
 }
@@ -1294,7 +1309,7 @@ function AddDevice({ data }) {
           jsx('p', {
             className: 'hm-small',
             style: { margin: 0 },
-            children: 'Scan it with the old phone or laptop, or type the address. Check the certificate matches, then approve the code it shows.'
+            children: 'Scan it with the old phone or laptop, or type the address. Check the certificate matches, then approve it by typing the code it shows.'
           })
         ]
       }),
@@ -1305,7 +1320,14 @@ function AddDevice({ data }) {
               jsxs('div', {
                 className: 'hm-row',
                 children: [jsx('span', { className: 'hm-mono', children: hub.url }), jsx(CopyButton, { text: hub.url, label: 'Copy address', appearance: 'icon', buttonSize: 'icon-xs', buttonVariant: 'ghost' })]
-              })
+              }),
+              (hub.urls || []).filter(u => u !== hub.url && !/\/\/localhost[:/]/.test(u)).length
+                ? jsx('div', {
+                    className: 'hm-note',
+                    style: { marginTop: 4 },
+                    children: 'Also: ' + (hub.urls || []).filter(u => u !== hub.url && !/\/\/localhost[:/]/.test(u)).join(', ')
+                  })
+                : null
             ]
           })
         : null,
@@ -1336,11 +1358,12 @@ function AddDevice({ data }) {
                   jsxs('div', {
                     className: 'hm-req-meta',
                     children: [
-                      jsx('span', { className: 'hm-mono', children: fmtCode(p.code) }),
+                      jsx('span', { className: 'hm-mono', children: p.ip }),
                       p.wants ? ` · wants ${p.wants}` : '',
-                      ` · ${p.ip} · expires in ${mmss(p.expires_in_s)}`
+                      ` · expires in ${mmss(p.expires_in_s)}`
                     ]
                   }),
+                  p.repair || p.name_taken ? jsx('div', { className: 'hm-req-meta hm-warn', children: pairWarning(p).trim() }) : null,
                   jsxs('div', {
                     className: 'hm-row',
                     style: { marginLeft: 14 },
@@ -1354,7 +1377,7 @@ function AddDevice({ data }) {
               p.code
             )
           )
-        : jsx('div', { className: 'hm-note', style: { marginTop: 0 }, children: 'No device is waiting. A new one shows a 6-digit code; it appears here.' }),
+        : jsx('div', { className: 'hm-note', style: { marginTop: 0 }, children: 'No device is waiting. A new one shows a 6-digit code; it appears here, and you type that code to add it.' }),
       unplaced.length
         ? jsx('div', { className: 'hm-note', children: `${unplaced.map(d => d.name).join(', ')} paired but not in a room yet: drag ${unplaced.length > 1 ? 'them' : 'it'} into one.` })
         : null
@@ -1497,6 +1520,7 @@ function RoomsPage() {
             title: confirm.title,
             description: confirm.description,
             confirmLabel: confirm.confirmLabel,
+            children: confirm.body || null,
             dismissOnConfirm: true
           })
         : null

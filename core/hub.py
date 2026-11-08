@@ -165,7 +165,9 @@ class Hub:
         pairing_ttl_s: float = 600,
         hello_timeout_s: float = 10.0,
         max_pending_per_ip: int = 5,
+        max_pending_total: int = 10,
         deny_ttl_s: float = 600,
+        deny_ip_ttl_s: float = 120,
         clock: Callable[[], float] = time.time,
     ) -> None:
         if tls and (cert is None or key is None):
@@ -180,7 +182,9 @@ class Hub:
         self.pairing_ttl_s = pairing_ttl_s
         self.hello_timeout_s = hello_timeout_s
         self.max_pending_per_ip = max_pending_per_ip
+        self.max_pending_total = max_pending_total
         self.deny_ttl_s = deny_ttl_s
+        self.deny_ip_ttl_s = deny_ip_ttl_s
         self._clock = clock
         self.stats: dict[str, int] = {"dropped_frames": 0, "bad_messages": 0}
         # Extra facts for the satellite's screen, sent with ``paired`` (wake phrase, conversation
@@ -192,6 +196,7 @@ class Hub:
         self._disconnect_cbs: list[Callable[[str], None]] = []
         self._pairing_cbs: list[Callable[[], None]] = []
         self._denied: dict[str, float] = {}  # device id -> refused until (hub clock)
+        self._denied_ips: dict[str, float] = {}  # address -> no new pairing requests until (hub clock)
         self._sessions: dict[str, _Session] = {}  # trusted, by device id
         self._waiting: dict[str, _Session] = {}  # waiting for approval, by code
         self._pending_by_ip: dict[str, dict[str, float]] = {}  # ip -> {code: expires_at}
@@ -326,13 +331,25 @@ class Hub:
         self.store.cancel_pairing(code)
         if s.device_id:
             self._denied[s.device_id] = self._clock() + self.deny_ttl_s
+        if s.ip and self.deny_ip_ttl_s > 0:  # no fresh look-alike from the same address right away
+            self._denied_ips[s.ip] = self._clock() + self.deny_ip_ttl_s
         await self._send(s, {"type": "error", "code": "pairing_denied", "message": "the owner did not approve this device"})
         self._close_later(s, CLOSE_DENIED, "pairing denied")
         return True
 
     def pending_pairings(self) -> list[dict[str, Any]]:
-        """Devices waiting for approval, oldest first: code, device id, name, browser, address."""
+        """Devices waiting for approval, oldest first: code, device id, name, browser, address.
+
+        ``repair``: the request claims the id of a paired device (approving it gives that id a new
+        key and disconnects the device that has it). ``name_taken``: a paired device has this name.
+        Both are set by the requester, so the Rooms page warns about them."""
         now = self._clock()
+        try:
+            paired = [d for d in self.store.list_devices() if d.paired]
+        except Exception:
+            paired = []
+        paired_ids = {d.device_id for d in paired}
+        paired_names = {_name_key(d.name) for d in paired if d.name}
         out = []
         for code, s in self._waiting.items():
             if s.ws.closed:
@@ -348,6 +365,8 @@ class Hub:
                 "wants": wants.strip()[:64] if isinstance(wants, str) and wants.strip() else None,
                 "since_s": max(0, round(now - s.code_at)),
                 "expires_in_s": max(0, round(s.code_at + self.pairing_ttl_s - now)),
+                "repair": s.device_id in paired_ids,
+                "name_taken": _name_key(s.name) in paired_names,
             })
         return sorted(out, key=lambda p: -p["since_s"])
 
@@ -370,6 +389,7 @@ class Hub:
         existed = self.store.revoke_device(device_id)
         s = self._sessions.pop(device_id, None)
         if s is not None:
+            s.authed = False  # nothing it sends from now on is trusted, even before the close lands
             self.rooms.detach(device_id)
             self._close_later(s, CLOSE_BAD_KEY, "device revoked")
             self._disconnected(device_id)
@@ -503,11 +523,19 @@ class Hub:
                 await s.ws.close(code=CLOSE_DENIED, message=b"pairing denied")
                 return
             del self._denied[s.device_id]
+        ip_refused = self._denied_ips.get(s.ip)
+        if ip_refused is not None:
+            if ip_refused > now:
+                await self._send(s, {"type": "error", "code": "pairing_denied", "message": "the owner did not approve this device"})
+                await s.ws.close(code=CLOSE_DENIED, message=b"pairing denied")
+                return
+            del self._denied_ips[s.ip]
         pending = self._pending_by_ip.setdefault(s.ip, {})
         for code, expires_at in list(pending.items()):
             if expires_at <= now:
                 del pending[code]
-        if len(pending) >= self.max_pending_per_ip:
+        waiting = sum(1 for w in self._waiting.values() if not w.ws.closed and w.device_id != s.device_id)
+        if len(pending) >= self.max_pending_per_ip or waiting >= self.max_pending_total:
             await self._send(s, {"type": "error", "code": "rate_limited", "message": "too many devices waiting to pair from this address"})
             await s.ws.close(code=CLOSE_RATE_LIMITED, message=b"rate limited")
             return
@@ -541,6 +569,7 @@ class Hub:
         old = self._sessions.get(device_id)
         self._sessions[device_id] = s
         if old is not None and old is not s:
+            old.authed = False
             self._close_later(old, CLOSE_REPLACED, "replaced by a newer connection")
         s.conn = DeviceConn(device_id=device_id, name=s.name, transport=s)
         device = self.store.get_device(device_id)
@@ -657,3 +686,7 @@ class Hub:
         task = asyncio.create_task(s.ws.close(code=code, message=reason.encode()))
         self._bg.add(task)
         task.add_done_callback(self._bg.discard)
+
+
+def _name_key(name: str | None) -> str:
+    return " ".join(str(name or "").casefold().split())

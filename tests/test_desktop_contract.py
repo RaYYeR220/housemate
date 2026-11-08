@@ -103,3 +103,14 @@ def test_hermes_desktop_surface_lint_passes():
     lint = pytest.importorskip("hermes_cli.plugin_validate_desktop")
     assert lint.desktop_surface_hits(ROOT) == []
     assert lint.desktop_surface_hits(ROOT, lint.desktop_review_findings) == []
+
+
+def test_pairing_is_approved_by_the_typed_code_only():
+    """Review M3: names and rooms of pairing requests come from the requester, so the page never shows
+    a request's code and approves only with the code the owner typed from the device, always in a
+    dialog (no "confirm once, then one click" shortcut)."""
+    code = code_only(source())
+    assert not re.search(r"children:[^\n]*\bp\.code\b", code)
+    assert "approvedOnce" not in code
+    assert "store.act('pair_approve', room ? { code, room } : { code })" in code
+    assert "if (!confirmSetter) return" in code

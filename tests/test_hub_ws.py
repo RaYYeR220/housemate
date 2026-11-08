@@ -243,6 +243,76 @@ async def test_pairing_rate_limited_per_ip(env):
     assert (await late.recv_control())["type"] == "pair.code"
 
 
+async def test_pending_flags_a_request_that_claims_a_paired_device(env):
+    """Review M3: a keyless hello may claim a paired device id; approving it would rotate that
+    device's key and kick the real one. The Rooms page gets a flag to warn about it."""
+    await env.paired_sat("dev-kitchen", "Kitchen phone")
+    imposter = await env.sat("dev-kitchen", "Kitchen phone")
+    await imposter.recv_control(type="pair.code")
+    [pending] = env.hub.pending_pairings()
+    assert pending["repair"] is True and pending["name_taken"] is True
+
+
+async def test_pending_flags_a_name_a_paired_device_has(env):
+    await env.paired_sat("dev-kitchen", "Kitchen iPad")
+    lookalike = await env.sat("dev-other", "kitchen ipad ")
+    await lookalike.recv_control(type="pair.code")
+    [pending] = env.hub.pending_pairings()
+    assert pending["repair"] is False and pending["name_taken"] is True
+
+
+async def test_pending_pairings_have_a_global_cap():
+    env = await _make_env(max_pending_total=2, max_pending_per_ip=10)
+    try:
+        for i in range(2):
+            s = await env.sat(f"dev-pending-{i}")
+            await s.recv_control(type="pair.code")
+        extra = await env.sat("dev-pending-x")
+        assert (await extra.recv_control(type="error"))["code"] == "rate_limited"
+        assert await extra.wait_closed() == 4429
+    finally:
+        await env.close()
+        await env.hub.stop()
+
+
+async def test_deny_cools_down_the_address_not_just_the_device():
+    """A denied request from an address cannot come straight back as a fresh look-alike."""
+    env = await _make_env(deny_ip_ttl_s=60)
+    try:
+        first = await env.sat("dev-evil-1", "Kitchen iPad")
+        code = (await first.recv_control(type="pair.code"))["code"]
+        assert await env.hub.deny_pairing(code)
+        again = await env.sat("dev-evil-2", "Kitchen iPad")
+        assert (await again.recv_control(type="error"))["code"] == "pairing_denied"
+        assert env.hub.pending_pairings() == []
+        # a paired device from that address still connects with its key
+    finally:
+        await env.close()
+        await env.hub.stop()
+
+
+async def test_revoked_socket_is_untrusted_at_once(env):
+    """Review L6: between revoke and the close completing, nothing the socket sends is trusted."""
+    await env.paired_sat()
+    session = env.hub._sessions["dev-kitchen"]
+    assert await env.hub.revoke_device("dev-kitchen") is True
+    assert session.authed is False
+    before = len(env.control)
+    await env.hub._on_text(session, encode({"type": "ui.action", "kind": "approve", "id": "req-1"}))
+    env.hub._on_binary(session, bytes([protocol.MIC_PCM]) + FRAME)
+    assert len(env.control) == before
+    assert env.audio == []
+
+
+async def test_replaced_socket_is_untrusted_at_once(env):
+    first = await env.paired_sat()
+    old = env.hub._sessions["dev-kitchen"]
+    newer = await env.sat("dev-kitchen", "Kitchen phone", first.device_key)
+    await newer.recv_control(type="paired")
+    assert old.authed is False
+    assert env.hub._sessions["dev-kitchen"].authed is True
+
+
 async def test_pairing_wait_times_out_cleanly():
     e = await _make_env(pairing_ttl_s=0.3)
     try:
