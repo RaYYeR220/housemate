@@ -314,9 +314,15 @@ def test_cli_status_when_hub_down_explains():
     assert code == 1 and HUB_DOWN in out
 
 
-def test_cli_bench_not_implemented():
-    code, out = _cli("bench")
-    assert "not implemented yet" in out
+def test_cli_bench_rejects_unknown_parts():
+    code, out = _cli("bench", "speed")
+    assert code == 2 and "unknown bench part" in out
+
+
+def test_cli_bench_latency_needs_the_hub(tmp_path):
+    code, out = _cli("bench", "latency", "--data-dir", str(tmp_path), "--out", str(tmp_path / "results"))
+    assert code == 1 and HUB_DOWN in out
+    assert not (tmp_path / "results" / "latency.json").exists()
 
 
 async def test_cli_pair_and_rooms_through_client(services):

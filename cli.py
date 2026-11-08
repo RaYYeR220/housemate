@@ -30,6 +30,7 @@ Manage Housemate. The hub runs inside the gateway (hermes gateway run, housemate
   hermes housemate devices                paired devices
   hermes housemate revoke <device-id>     unpair a device
   hermes housemate rooms add Living Room  add a room (also: remove, group)
+  hermes housemate bench [wake latency tests]  measure; writes results/*.json
 """
 
 
@@ -287,8 +288,9 @@ def _cert(args, client, out) -> int:
 
 
 def _bench(args, client, out) -> int:
-    print("hermes housemate bench: not implemented yet", file=out)
-    return 1
+    from .bench.run import run
+
+    return run(args, client, out)
 
 
 _COMMANDS = {
@@ -320,7 +322,9 @@ def setup_parser(parser: argparse.ArgumentParser) -> None:
     group.add_argument("room")
     group.add_argument("group", nargs="?", default=None, help="group name; leave out to clear")
     subs.add_parser("cert", help="hub address, certificate fingerprint and a QR code to open it")
-    subs.add_parser("bench", help="latency and wake-word benchmark")
+    from .bench.run import add_arguments
+
+    add_arguments(subs.add_parser("bench", help="wake-word and latency benchmark: writes results/*.json"))
 
 
 def main(args: argparse.Namespace, out: TextIO | None = None) -> int:
