@@ -15,7 +15,17 @@ def test_manifest_declares_platform_and_tools():
     assert m["name"] == "housemate"
     assert m["requires_hermes"] == ">=0.23.0"
     assert isinstance(m["version"], str)
-    assert isinstance(m["provides_tools"], list)
+    assert m["provides_tools"] == [
+        "housemate_rooms",
+        "housemate_announce",
+        "housemate_timer_set",
+        "housemate_alarm_set",
+        "housemate_timer_list",
+        "housemate_timer_cancel",
+        "housemate_show",
+    ]
+    assert all(name.startswith("housemate_") for name in m["provides_tools"])
+    assert (ROOT / "tools.py").is_file(), "provides_tools needs tools.py with register_tools(ctx)"
 
 
 def test_pyproject_dependencies_have_upper_bounds():

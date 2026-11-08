@@ -2,7 +2,9 @@
 
 Kept import-light on purpose: Hermes defers ``kind: platform`` plugins, so the
 adapter (and everything it pulls in: the LAN hub, audio pipeline, models) is
-imported only when the gateway asks for the ``housemate`` platform.
+imported only when the gateway asks for the ``housemate`` platform. The agent
+tools, slash commands, CLI, blueprints and skill register from ``tools.py``
+(declared in ``provides_tools``) so they exist in every process.
 """
 
 from __future__ import annotations
@@ -36,6 +38,18 @@ def check_requirements() -> bool:
 
 
 def register(ctx) -> None:
+    # When Hermes defers the platform it already ran tools.register_tools for this
+    # same load (same manifest object); never register the tools surface twice.
+    try:
+        from .tools import register_tools, registered_for
+
+        if not registered_for(ctx):
+            register_tools(ctx)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).warning("housemate: registering tools failed", exc_info=True)
+
     kwargs = dict(
         name=PLATFORM_NAME,
         label="Housemate",

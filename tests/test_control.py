@@ -3,19 +3,20 @@ import json
 import os
 import socket
 import sqlite3
-import threading
 import time
 from pathlib import Path
 
 import aiohttp
 import pytest
 
-from housemate.core import control as control_mod
 from housemate.core.announce import Announcer
 from housemate.core.client import HUB_DOWN, HousemateClient
 from housemate.core.control import (
+    DEFAULT_PORT,
+    ControlPortInUse,
     ControlServer,
     HubServices,
+    bind_loopback,
     local_services,
     register_local_services,
     run_op,
@@ -94,7 +95,7 @@ async def env(tmp_path):
     timers = TimerService(store, time.time, None, play_chime=lambda r: announcer.chime(r, "timer"),
                           speak=announcer.say, broadcast_timers=announcer.push_timers)
     services = HubServices(store=store, registry=registry, hub=hub, timers=timers, announcer=announcer,
-                           urls=["https://192.168.1.20:8787"], fingerprint="AB:CD")
+                           urls=["https://192.168.1.20:8742"], fingerprint="AB:CD")
     data_dir = tmp_path / "data"
     data_dir.mkdir()
     server = ControlServer(services, data_dir / "control.token", port=0)
@@ -143,6 +144,40 @@ async def test_control_binds_loopback_only(env):
     for ip in lan_ipv4s()[:1]:
         with pytest.raises(OSError):
             socket.create_connection((ip, env.server.port), timeout=1.0).close()
+
+
+def test_default_control_port():
+    assert DEFAULT_PORT == 8743
+    assert ControlServer(None, Path("control.token")).port == 8743
+
+
+async def test_second_server_on_same_port_fails_loudly(env, tmp_path):
+    other_dir = tmp_path / "other"
+    other = ControlServer(env.services, other_dir / "control.token", port=env.server.port)
+    with pytest.raises(ControlPortInUse) as excinfo:
+        await other.start()
+    assert str(env.server.port) in str(excinfo.value) and "in use" in str(excinfo.value)
+    assert not (other_dir / "control.token").exists()  # a live hub's token is never rotated away
+    status, _ = await _post(env, "rooms", token=env.server.token)
+    assert status == 200
+
+
+def test_port_cannot_be_shared_even_with_reuseaddr():
+    sock = bind_loopback(0)
+    port = sock.getsockname()[1]
+    thief = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        thief.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        with pytest.raises(OSError):
+            thief.bind(("127.0.0.1", port))
+    finally:
+        thief.close()
+        sock.close()
+
+
+async def test_client_finds_non_default_port(env):
+    assert env.server.port != DEFAULT_PORT
+    assert (await env.call("info"))["ok"] is True
 
 
 async def test_token_file_is_fresh_and_private(env):
@@ -279,7 +314,7 @@ async def test_rooms_op_reports_rooms_devices_timers(env):
     assert by_room["kitchen"]["online"] is True and by_room["kitchen"]["devices"][0]["name"] == "Kitchen phone"
     assert by_room["kitchen"]["timers"][0]["label"] == "tea"
     assert by_room["office"]["online"] is False and by_room["office"]["state"] == "offline"
-    assert result["hub_url"] == "https://192.168.1.20:8787"
+    assert result["hub_url"] == "https://192.168.1.20:8742"
 
 
 async def test_timer_needs_room_when_several_and_none_known_from_session(env):
@@ -357,7 +392,7 @@ async def test_room_with_online_device_is_not_removed(env):
 async def test_info_op(env):
     result = await env.call("info")
     assert result["ok"] is True and result["fingerprint"] == "AB:CD"
-    assert result["urls"] == ["https://192.168.1.20:8787"]
+    assert result["urls"] == ["https://192.168.1.20:8742"]
 
 
 async def test_run_op_never_raises(env):

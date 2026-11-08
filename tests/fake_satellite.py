@@ -2,7 +2,7 @@
 
 Used by the hub tests, and runnable by hand against a live hub:
 
-    python tests/fake_satellite.py --url wss://192.168.1.20:8787/ws --device-id test-sat-1
+    python tests/fake_satellite.py --url wss://192.168.1.20:8742/ws --device-id test-sat-1
 """
 
 from __future__ import annotations
@@ -141,7 +141,7 @@ async def _run(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Fake Housemate satellite")
-    parser.add_argument("--url", default="wss://127.0.0.1:8787/ws")
+    parser.add_argument("--url", default="wss://127.0.0.1:8742/ws")
     parser.add_argument("--device-id", default="fake-satellite-1")
     parser.add_argument("--name", default="Fake satellite")
     parser.add_argument("--key", default=None, help="device key from an earlier pairing")

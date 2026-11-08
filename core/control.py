@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from .store import slugify
-from .timers import parse_hhmm
+from .timers import ACTIVE_STATES, parse_hhmm
 
 if TYPE_CHECKING:
     from .announce import Announcer
@@ -44,7 +44,9 @@ __all__ = [
     "DEFAULT_PORT",
     "OPS",
     "PORT_FILE",
+    "ControlPortInUse",
     "ControlServer",
+    "bind_loopback",
     "HubServices",
     "local_services",
     "register_local_services",
@@ -55,7 +57,7 @@ __all__ = [
 log = logging.getLogger(__name__)
 
 LOOPBACK = "127.0.0.1"
-DEFAULT_PORT = 8788
+DEFAULT_PORT = 8743
 PORT_FILE = "control.json"
 MAX_BODY = 64 * 1024
 MAX_TITLE = 200
@@ -354,7 +356,7 @@ async def _op_room_remove(s: HubServices, a: dict) -> dict:
     if online:
         names = ", ".join(c.name for c in online)
         raise ValueError(f"{room.name} still has a device online ({names}); move it to another room first")
-    if s.timers is not None and s.timers.list(room.slug):
+    if store.list_timers(states=ACTIVE_STATES, room=room.slug):
         raise ValueError(f"{room.name} has timers running; cancel them first")
     store.remove_room(room.slug)
     return {"ok": True, "room": {"slug": room.slug, "name": room.name}}
@@ -445,8 +447,46 @@ def write_private(path: Path, text: str) -> None:
         tmp.unlink(missing_ok=True)
 
 
+class ControlPortInUse(OSError):
+    """Something else already listens on the control port."""
+
+
+def bind_loopback(port: int) -> socket.socket:
+    """A listening TCP socket on 127.0.0.1:``port`` that nobody else can share.
+
+    Windows lets a second process bind a port that is in use when it asks for SO_REUSEADDR, so
+    the socket takes SO_EXCLUSIVEADDRUSE there; elsewhere SO_REUSEADDR only skips TIME_WAIT.
+    A clash raises ``ControlPortInUse`` instead of quietly sharing or moving ports.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        if os.name == "nt":
+            exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+            if exclusive is not None:
+                sock.setsockopt(socket.SOL_SOCKET, exclusive, 1)
+        else:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind((LOOPBACK, port))
+        except OSError as exc:
+            raise ControlPortInUse(
+                exc.errno,
+                f"housemate control API: {LOOPBACK}:{port} is already in use ({exc.strerror or exc}); "
+                "stop the other program or set the housemate control_port to a free port",
+            ) from exc
+        sock.listen(64)
+        return sock
+    except BaseException:
+        sock.close()
+        raise
+
+
 class ControlServer:
-    """``POST /v1/<op>`` on 127.0.0.1 with a bearer token. Start it on the hub's event loop."""
+    """``POST /v1/<op>`` on 127.0.0.1 with a bearer token. Start it on the hub's event loop.
+
+    ``start()`` raises ``ControlPortInUse`` when the port is taken; the tools keep working
+    in-process, only other processes (the CLI) lose their way in.
+    """
 
     host = LOOPBACK
 
@@ -479,15 +519,16 @@ class ControlServer:
         self._token = secrets.token_urlsafe(32)
         app = web.Application(client_max_size=MAX_BODY)
         app.router.add_post("/v1/{op}", self._handle)
+        sock = bind_loopback(self.port)
         self._runner = web.AppRunner(app, access_log=None)
-        await self._runner.setup()
         try:
-            sock = socket.create_server((LOOPBACK, self.port))
+            await self._runner.setup()
             site = web.SockSite(self._runner, sock)
             await site.start()
         except BaseException:
             await self._runner.cleanup()
             self._runner = None
+            sock.close()
             raise
         self._sockets = [sock]
         self.port = sock.getsockname()[1]

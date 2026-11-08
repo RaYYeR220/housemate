@@ -9,7 +9,16 @@ description: >
   where you set them, intercom, room screens and spoken approvals.
 author: RaYYeR220
 requires_hermes: ">=0.23.0"
-provides_tools: []
+# Agent tools (toolset "housemate"). Declared so Hermes imports tools.py and
+# registers them in every process (CLI, TUI, Desktop) while the adapter stays deferred.
+provides_tools:
+  - housemate_rooms
+  - housemate_announce
+  - housemate_timer_set
+  - housemate_alarm_set
+  - housemate_timer_list
+  - housemate_timer_cancel
+  - housemate_show
 optional_env:
   - name: HOUSEMATE_HOME_CHANNEL
     description: "Room that receives cron deliveries by default (e.g. kitchen)"
