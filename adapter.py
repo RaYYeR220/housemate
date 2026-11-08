@@ -33,7 +33,6 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 from gateway.platforms.base import (
     AudioFormat,
     BasePlatformAdapter,
@@ -73,6 +72,7 @@ SESSION_IDLE_WAIT_S = 20.0
 APPROVAL_ANSWER_TTL_S = 310.0  # a little past Hermes's default 5-minute approval timeout
 STOP_ANSWER_TTL_S = 200.0
 PLAYBACK_GRACE_S = 3.0
+RECENT_TURN_S = 60.0
 MAX_REPROMPTS = 2
 
 
@@ -174,17 +174,11 @@ class _NullWake:
 # --- the adapter ---------------------------------------------------------------------------------
 
 
-class HousemateAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
-    # Paired devices are the allowlist: pairing a phone on the hub is the access grant, revoking
-    # it takes access away at once (HOUSEMATE_ALLOWED_DEVICES, when set, narrows it further).
-    ALLOW_ALL_ENV_PREFIX = "HOUSEMATE"
-
+class HousemateAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig) -> None:
         super().__init__(config, Platform(PLATFORM_NAME))
-        self._dm_policy = "allowlist"
-        self._group_policy = "disabled"
-        self._allow_from: tuple[str, ...] = ()
-        self._group_allow_from: tuple[str, ...] = ()
+        if not isinstance(getattr(config, "extra", None), dict):
+            config.extra = {}
         self.cfg = HousemateConfig.from_extra(getattr(config, "extra", None))
         self.router = SessionRouter(self.cfg.conversation, turn_timeout_s=self.cfg.turn_timeout_s)
         self.arbiter = WakeArbiter()
@@ -256,6 +250,7 @@ class HousemateAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self.urls = [f"{scheme}://{ip}:{hub.port}" for ip in lan_ipv4s()] + [f"{scheme}://localhost:{hub.port}"]
         self._wire(store, registry, hub)
         self._seed_rooms()
+        self._refresh_allowlist()
 
         from .core.control import HubServices, register_local_services
 
@@ -318,6 +313,38 @@ class HousemateAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             self.models = None
         for device_id in list(self.hub.online_devices()):
             await self._ensure_listener(device_id)
+        if self.cfg.prewarm:
+            await self._prewarm()
+
+    async def _prewarm(self) -> None:
+        """Load Hermes's speech-to-text model before the first question: a cold load adds seconds
+        to the first answer after a restart. A short, quiet clip goes to the answer side chat under
+        a one-time marker; whatever it transcribes to is ignored and the side turn is vetoed."""
+        try:
+            device_id = next((d.device_id for d in self.store.list_devices() if d.paired), None)
+        except Exception:
+            device_id = None
+        if device_id is None:
+            return  # nobody may talk yet; the first real question warms it up
+        token = answers.new_token()
+        self.book.add(answers.PendingAnswer(
+            token=token, kind="warmup", device_id="~warmup", room="", expires_at=time.monotonic() + 120.0,
+            handle=lambda transcript: "speech-to-text warmed up", key="warmup"))
+        # 0.8 s of a quiet 220 Hz tone: enough for a real decode, nothing anyone would say.
+        import math
+
+        samples = (int(300 * math.sin(2 * math.pi * 220 * i / 16_000)) for i in range(12_800))
+        pcm = b"".join(v.to_bytes(2, "little", signed=True) for v in samples)
+        try:
+            path = await self._cache_audio(pcm_to_wav(pcm), ".wav")
+            source = self.build_source(chat_id=SIDE_CHAT, chat_name="Housemate answers", chat_type="dm",
+                                       user_id=device_id, user_name="Housemate")
+            await self.handle_message(MessageEvent(
+                text="", message_type=MessageType.VOICE, source=source, message_id=uuid.uuid4().hex,
+                media_urls=[str(path)], media_types=["audio/wav"], channel_context=answers.make_marker(token)))
+            log.info("housemate: warming up speech-to-text")
+        except Exception:
+            log.debug("housemate: warm-up skipped", exc_info=True)
 
     async def disconnect(self) -> None:
         from .core.control import unregister_local_services
@@ -362,14 +389,18 @@ class HousemateAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
     # ======================================================================== access
 
-    def _live_dm_allow_from(self):
+    def _refresh_allowlist(self) -> None:
+        """Paired devices are the allowlist. Hermes reads ``config.extra["allow_from"]`` live (at
+        intake and again at admission), so pairing a phone grants access and revoking it takes
+        access away at once. ``HOUSEMATE_ALLOWED_DEVICES``, when set, replaces this list."""
         if self.store is None:
-            return ()
+            return
         try:
-            return {d.device_id for d in self.store.list_devices() if d.paired}
+            paired = sorted(d.device_id for d in self.store.list_devices() if d.paired)
         except Exception:
             log.exception("housemate: reading paired devices failed")
-            return ()
+            return
+        self.config.extra["allow_from"] = paired
 
     # ======================================================================== voice mode
 
@@ -552,6 +583,7 @@ class HousemateAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             self._on_ui_action(device_id, msg)
 
     async def _on_hello(self, device_id: str) -> None:
+        self._refresh_allowlist()  # a device that just paired may talk now
         await self._ensure_listener(device_id)
         room = self._device_room(device_id)
         ringing = bool(room and self.timers is not None and self.timers.is_ringing(room))
@@ -580,12 +612,12 @@ class HousemateAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
         if self.models is not None:
             wake = await asyncio.to_thread(self.models.new_wake)
-            endpointer = await asyncio.to_thread(self.models.new_endpointer)
+            endpointer = await asyncio.to_thread(self.models.new_endpointer, end_silence_ms=self.cfg.end_silence_ms)
         else:
             from .core.endpointer import Endpointer
             from .core.vad import EnergyVad
 
-            wake, endpointer = _NullWake(), Endpointer(EnergyVad())
+            wake, endpointer = _NullWake(), Endpointer(EnergyVad(), end_silence_ms=self.cfg.end_silence_ms)
         if device_id in self.listeners or device_id not in self.hub.online_devices():
             return  # raced with another hello, or the device left while models loaded
         listener = DeviceListener(device_id, wake, endpointer, self.arbiter, self.cfg.wake_threshold,
@@ -595,6 +627,7 @@ class HousemateAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self.listeners[device_id] = listener
 
     def _on_disconnect(self, device_id: str) -> None:
+        self._refresh_allowlist()  # a revoked device loses access at once
         listener = self.listeners.pop(device_id, None)
         if listener is not None:
             listener.close()
@@ -674,6 +707,13 @@ class HousemateAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         active = self.router.active_turn(chat_id)
         if active is not None:  # a notice in the middle of a turn: show it, don't speak it
             await self._caption_room(active.room, "assistant", text)
+            return
+        recent = self.router.latest_turn(chat_id)
+        if recent is not None and self._chat_room(chat_id) is None and recent.age_s() < RECENT_TURN_S:
+            # Right after a turn (e.g. Hermes reporting that it failed): tell the room that asked.
+            await self._caption_room(recent.room, "assistant", text)
+            if self.cfg.speak_replies and recent.device_id:
+                self._spawn(self._speak_reply(recent.device_id, text))
             return
         # Nobody asked: a cron delivery, a reminder or a message from another platform.
         rooms = self._delivery_rooms(chat_id)
@@ -1185,6 +1225,12 @@ class HousemateAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         for conn in self.registry.devices_in(room):
             self._arm_stop(room, conn.device_id)
             self._set_state(conn.device_id, "ringing")
+        try:
+            from .core.timers import ring_text
+
+            await self._caption_room(room, "timer", ring_text(timer, getattr(self.timers, "tz", None)))
+        except Exception:
+            log.debug("housemate: no ring caption", exc_info=True)
 
     def _arm_stop(self, room: str, device_id: str) -> None:
         loop = self._loop
@@ -1209,6 +1255,10 @@ class HousemateAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     def _stop_ring(self, room: str) -> None:
         if self.timers is not None:
             self.timers.stop_ringing(room)
+        self.book.drop(kind="stop", room=room)
+        for conn in self.registry.devices_in(room):
+            if conn.device_id not in self._playing:
+                self._set_state(conn.device_id, "idle")
 
     async def _broadcast_timers(self, room: str, items: list[dict]) -> None:
         await self.announcer.push_timers(room, items)

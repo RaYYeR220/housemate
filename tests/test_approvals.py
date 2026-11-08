@@ -182,6 +182,16 @@ async def test_spoken_stop_while_ringing(kit):
     assert kit.hub.controls("dev-kitchen", "state")[-1]["state"] == "ringing"
     await answer_by_voice(kit, "Okay, stop.")
     assert kit.timers.stopped == ["kitchen"]
+    assert kit.hub.controls("dev-kitchen", "state")[-1]["state"] == "idle"
+    assert kit.adapter.book.for_device("dev-kitchen") is None
+
+
+async def test_ring_window_ignores_other_speech(kit):
+    kit.timers.ringing.add("kitchen")
+    await kit.adapter._on_timer_ring(type("T", (), {"room": "kitchen"})())
+    await answer_by_voice(kit, "what a lovely day")
+    assert kit.timers.stopped == []
+    assert kit.adapter.book.for_device("dev-kitchen").kind == "stop"  # still listening for "stop"
 
 
 async def test_wake_word_stops_a_ring(kit):

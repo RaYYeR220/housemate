@@ -76,6 +76,8 @@ class HousemateConfig:
     followup_s: float = 6.0
     answer_window_s: float = 10.0  # no-wake window for "approve" / "deny" / a clarify choice
     turn_timeout_s: float = 180.0  # safety net: a household turn never blocks the queue longer
+    end_silence_ms: int = 700  # this much silence ends an utterance
+    prewarm: bool = True  # load Hermes's speech-to-text model at start-up, not on the first question
     rooms: tuple[str, ...] = ("Kitchen", "Office")
     earshot_groups: dict[str, str] = field(default_factory=dict)
     speak_replies: bool = True
@@ -122,7 +124,13 @@ class HousemateConfig:
                     changes[key] = number
                 else:
                     bad(key, f"must be a number from {lo:g} to {hi:g}")
-        for key in ("tls", "speak_replies"):
+        if "end_silence_ms" in extra:
+            number = _number(extra["end_silence_ms"], 300, 2000)
+            if number is not None:
+                changes["end_silence_ms"] = int(number)
+            else:
+                bad("end_silence_ms", "must be a number from 300 to 2000")
+        for key in ("tls", "speak_replies", "prewarm"):
             if key in extra:
                 flag = _flag(extra[key])
                 if flag is not None:

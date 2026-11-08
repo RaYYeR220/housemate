@@ -39,6 +39,14 @@ class Turn:
     started_at: float
     audio: bool = False  # spoken audio reached a device for this turn
     reserved: bool = False  # released from the queue, not yet handed to Hermes
+    ended_at: float | None = None
+    clock: Callable[[], float] | None = None
+
+    def age_s(self) -> float:
+        """Seconds since the turn ended (0 while it runs)."""
+        if self.ended_at is None or self.clock is None:
+            return 0.0
+        return self.clock() - self.ended_at
 
 
 @dataclass
@@ -80,7 +88,7 @@ class SessionRouter:
         return slugify(room)
 
     def begin_turn(self, chat_id: str, room: str, message_id: str, device_id: str | None = None) -> Turn:
-        turn = Turn(chat_id, slugify(room), message_id, device_id, self._clock())
+        turn = Turn(chat_id, slugify(room), message_id, device_id, self._clock(), clock=self._clock)
         self._active[chat_id] = turn
         self._last[chat_id] = turn
         self._turns[message_id] = turn
@@ -145,6 +153,7 @@ class SessionRouter:
         if message_id is not None and turn.message_id != message_id:
             return None
         del self._active[chat_id]
+        turn.ended_at = self._clock()
         return self._release(chat_id)
 
     def expire(self) -> list[tuple[str, Any]]:
@@ -154,6 +163,7 @@ class SessionRouter:
         for chat_id, turn in list(self._active.items()):
             if now - turn.started_at >= self.turn_timeout_s:
                 del self._active[chat_id]
+                turn.ended_at = now
                 item = self._release(chat_id)
                 if item is not None:
                     released.append((chat_id, item))

@@ -156,9 +156,21 @@ async def test_spoken_replies_on_by_default_except_side_chat(kit):
 
 
 async def test_paired_devices_are_the_allowlist(kit):
-    assert kit.adapter.enforces_own_access_policy is True
-    assert kit.adapter._is_dm_allowed("dev-kitchen")
-    assert not kit.adapter._is_dm_allowed("dev-stranger")
+    kit.store.upsert_device("dev-stranger", "Not paired")
+    kit.adapter._refresh_allowlist()
+    assert kit.adapter.config.extra["allow_from"] == ["dev-kitchen", "dev-office"]
+    kit.store.revoke_device("dev-office")
+    kit.drop("dev-office")  # the hub reports the revoked device's socket closing
+    assert kit.adapter.config.extra["allow_from"] == ["dev-kitchen"]
+
+
+async def test_error_right_after_a_turn_goes_to_the_room_that_asked(kit):
+    event = await speak(kit, "dev-office")
+    await kit.adapter.on_processing_complete(event, "failure")  # Hermes gave up on the turn
+    await kit.adapter.send("household", "Sorry, I encountered an error.")
+    await kit.settle()
+    assert kit.hub.controls("dev-office", "caption")[-1] == {"type": "caption", "role": "assistant", "text": "Sorry, I encountered an error."}
+    assert kit.hub.controls("dev-kitchen", "caption") == []
 
 
 # --- streaming TTS ---------------------------------------------------------------------------------
@@ -278,3 +290,20 @@ async def test_send_voice_plays_whole_file(kit, tmp_path):
     assert result.success
     assert kit.hub.pcm("dev-kitchen") == b"\x07\x00" * 4800
     assert kit.adapter.router.turn_for(event.message_id).audio
+
+
+async def test_prewarm_sends_a_vetoed_clip_to_the_side_chat(kit):
+    from housemate.core.answers import apply_answer
+
+    await kit.adapter._prewarm()
+    (event,) = kit.events
+    assert event.source.chat_id == "housemate-answers" and event.source.user_id == "dev-kitchen"
+    out = apply_answer(kit.adapter.book, {"platform": "housemate", "user_message": f'"you"\n\n{event.channel_context}'})
+    assert out["action"] == "block"
+    assert kit.adapter.book.for_device("dev-kitchen") is None  # never mistaken for a device's answer
+
+
+async def test_prewarm_skipped_without_paired_devices(tmp_path):
+    k = Kit(tmp_path).wire()
+    await k.adapter._prewarm()
+    assert k.events == []

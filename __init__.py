@@ -16,7 +16,9 @@ PLATFORM_HINT = (
     "to three short spoken sentences, no markdown, no lists, no URLs read aloud. "
     "The room the user spoke from is given as [room: ...]. For long content "
     "(recipes, lists, steps) call housemate_show to put it on that room's screen "
-    "and say one sentence about it."
+    "and say one sentence about it. When a command needs the user's OK, Hermes asks "
+    "them out loud and they answer approve or deny on the speaker, so you don't need "
+    "to ask for confirmation yourself."
 )
 
 
