@@ -1,0 +1,16 @@
+{
+  "name": "Housemate",
+  "short_name": "Housemate",
+  "description": "A hands-free Hermes speaker for this room.",
+  "lang": "en",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "any",
+  "background_color": "#c4452a",
+  "theme_color": "#c4452a",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}

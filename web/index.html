@@ -2,184 +2,106 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#c4452a">
+<meta name="color-scheme" content="light">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
 <title>Housemate</title>
-<style>
-  :root { color-scheme: light dark; --bg: #f6f5f2; --fg: #1c1c1a; --muted: #6b6a66; --accent: #2f6f5e; }
-  @media (prefers-color-scheme: dark) { :root { --bg: #151514; --fg: #ecebe6; --muted: #9a9890; --accent: #7cc4ad; } }
-  * { box-sizing: border-box; }
-  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: var(--bg); color: var(--fg);
-         font: 16px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; padding: 16px; }
-  main { width: 100%; max-width: 420px; text-align: center; }
-  h1 { font-size: 1.1rem; font-weight: 600; margin: 0 0 24px; letter-spacing: .02em; }
-  .code { font: 600 3rem/1 ui-monospace, "SF Mono", Consolas, monospace; letter-spacing: .15em; margin: 12px 0; }
-  .muted { color: var(--muted); font-size: .9rem; }
-  .status { font-size: 1.4rem; margin: 12px 0; }
-  form { display: flex; gap: 8px; margin-top: 20px; }
-  select, input, button { font: inherit; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--muted);
-                          background: transparent; color: inherit; min-height: 44px; }
-  select, input { flex: 1; min-width: 0; }
-  button { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; }
-  [hidden] { display: none !important; }
-</style>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="preload" href="fonts/archivo-expanded-500.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="style.css">
+<script type="module" src="app.js"></script>
 </head>
 <body>
-<main>
-  <h1>Housemate</h1>
+<div id="face">
+  <canvas id="obj" role="img" aria-label="This room drawn as a round plan, with a door and a route to the next room"></canvas>
+  <div id="flash" aria-hidden="true"></div>
+  <div id="inner"><div class="in">
+    <button id="rname" type="button"><span id="room-name"></span><span id="conn" aria-hidden="true"></span></button>
+    <h1 id="tier1"><span id="t-digits"></span></h1>
+    <p id="date"></p>
+    <div id="tbox"><span id="tb-label"></span><span id="tb-digits"></span><span id="tb-more"></span></div>
+    <div id="ringbox"><div class="rbig" id="rb-label"></div><div class="rsub" id="rb-sub"></div></div>
+  </div></div>
+  <button id="door" type="button"></button>
+  <span id="micoff" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M4 4l16 16"/></svg></span>
+  <main id="ui">
+    <div id="capwrap" class="none"><span id="cap-label"></span><p id="caption" aria-live="polite"></p><p id="hint"></p></div>
+    <p id="status" role="status"></p>
+    <section id="sheet">
+      <section id="prompt" aria-labelledby="p-title">
+        <h2 id="p-title"></h2>
+        <div id="p-details"></div>
+        <div id="p-btns"></div>
+        <p id="p-foot"></p>
+      </section>
+      <section id="card" aria-labelledby="c-title">
+        <header><h2 id="c-title"></h2></header>
+        <button id="card-close" type="button" aria-label="Close the card"><svg viewBox="0 0 16 16"><path d="M3 3l10 10M13 3L3 13"/></svg></button>
+        <div id="c-body"></div>
+      </section>
+    </section>
+    <div class="ctl">
+      <button id="mute" type="button" aria-label="Mute the microphone" aria-pressed="false">
+        <svg class="on" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/></svg>
+        <svg class="off" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M4 4l16 16"/></svg>
+      </button>
+      <button id="talk" type="button" aria-label="Hold to talk">
+        <svg viewBox="0 0 24 24"><path d="M4 12h1.5M7.5 8.5v7M10.5 5v14M13.5 8v8M16.5 10v4M19.5 12h.5"/></svg>
+      </button>
+    </div>
+  </main>
+</div>
 
-  <section id="connecting">
-    <p class="status">Connecting&hellip;</p>
-    <p class="muted" id="conn-detail"></p>
-  </section>
+<section id="s-connect" class="scr">
+  <p class="kicker">Housemate</p>
+  <h1 class="big">Finding the hub</h1>
+  <p class="sub" id="connect-detail"></p>
+</section>
 
-  <section id="pairing" hidden>
-    <p class="muted">Pair this device. Approve this code on the Rooms page, or run</p>
-    <p class="muted"><code>hermes housemate pair <span id="code-inline"></span></code></p>
-    <p class="code" id="code" aria-live="polite"></p>
-    <p class="muted">The code expires in 10 minutes.</p>
-  </section>
+<form id="s-setup" class="scr" autocomplete="off">
+  <p class="kicker">Housemate · new speaker</p>
+  <h1 class="big"><label for="name">Name this speaker</label></h1>
+  <input id="name" maxlength="64" required spellcheck="false" enterkeyhint="next">
+  <p class="sub">Something you will recognise on the PC, like "Kitchen phone".</p>
+  <label class="kicker" for="want-room">Which room is it in?</label>
+  <input id="want-room" maxlength="64" spellcheck="false" enterkeyhint="done" placeholder="Kitchen">
+  <div id="room-chips" class="chips" role="group" aria-label="Room suggestions"></div>
+  <button class="pill" type="submit">Continue</button>
+</form>
 
-  <section id="expired" hidden>
-    <p class="status">The pairing code expired.</p>
-    <button type="button" id="retry">Get a new code</button>
-  </section>
+<section id="s-pair" class="scr">
+  <p class="kicker">Pair this speaker</p>
+  <p class="code" id="code" aria-live="polite"></p>
+  <p class="sub">Approve this code on your PC: <b>Hermes Desktop → Rooms</b>, or run</p>
+  <code id="code-cmd"></code>
+  <p class="sub" id="code-left"></p>
+</section>
 
-  <section id="paired" hidden>
-    <p class="status" id="paired-status">Paired</p>
-    <p class="muted" id="room-label">Pick the room this device lives in.</p>
-    <form id="room-form">
-      <label for="room-select" hidden>Room</label>
-      <select id="room-select"></select>
-      <input id="room-new" placeholder="New room name" maxlength="64" hidden>
-      <button type="submit">Set room</button>
-    </form>
-  </section>
+<form id="s-room" class="scr">
+  <p class="kicker">Paired</p>
+  <h1 class="big">Which room is this?</h1>
+  <div id="rooms" class="chips" role="group" aria-label="Rooms"></div>
+  <div class="newroom">
+    <input id="room-new" placeholder="Another room" maxlength="64" aria-label="Name of another room">
+    <button class="pill" type="submit">Add</button>
+  </div>
+</form>
 
-  <p class="muted" id="error" role="status"></p>
-</main>
-<script>
-(() => {
-  "use strict";
-  const NEW_ROOM = "__new__";
-  const $ = (id) => document.getElementById(id);
+<section id="s-start" class="scr">
+  <button id="start" type="button"><span>Tap to start</span></button>
+  <p class="sub" id="start-text">Housemate listens for the wake word and answers out loud. It needs the microphone and the speaker.</p>
+</section>
 
-  function load(key) { try { return localStorage.getItem(key); } catch (e) { return null; } }
-  function save(key, value) {
-    try { value === null ? localStorage.removeItem(key) : localStorage.setItem(key, value); } catch (e) { /* private mode */ }
-  }
-  function newId() {
-    if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
-    const b = new Uint8Array(16);
-    crypto.getRandomValues(b);
-    return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
-  }
+<section id="s-error" class="scr">
+  <p class="kicker" id="err-kicker">Housemate</p>
+  <h1 class="big" id="err-title"></h1>
+  <p class="sub" id="err-text"></p>
+  <button class="pill" id="err-btn" type="button">Try again</button>
+</section>
 
-  let deviceId = load("housemate.device_id");
-  if (!deviceId) { deviceId = newId(); save("housemate.device_id", deviceId); }
-  const deviceName = load("housemate.name") || "Satellite";
-
-  let ws = null;
-  let backoff = 1000;
-  let stopped = false;
-
-  function show(section) {
-    for (const id of ["connecting", "pairing", "expired", "paired"]) $(id).hidden = id !== section;
-  }
-
-  function send(msg) {
-    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
-  }
-
-  function fillRooms(rooms, current) {
-    const sel = $("room-select");
-    sel.textContent = "";
-    for (const r of rooms || []) {
-      const opt = document.createElement("option");
-      opt.value = r.name;
-      opt.textContent = r.name;
-      if (r.slug === current) opt.selected = true;
-      sel.appendChild(opt);
-    }
-    const add = document.createElement("option");
-    add.value = NEW_ROOM;
-    add.textContent = "New room…";
-    sel.appendChild(add);
-    $("room-new").hidden = sel.value !== NEW_ROOM;
-  }
-
-  function setRoomLabel(name) {
-    $("paired-status").textContent = name ? "Paired · " + name : "Paired";
-    $("room-label").textContent = name ? "This device is in " + name + "." : "Pick the room this device lives in.";
-  }
-
-  function onMessage(msg) {
-    switch (msg.type) {
-      case "pair.code":
-        $("code").textContent = msg.code;
-        $("code-inline").textContent = msg.code;
-        show("pairing");
-        break;
-      case "paired":
-        save("housemate.device_key", msg.device_key);
-        fillRooms(msg.rooms, msg.room);
-        setRoomLabel(msg.room_name || "");
-        show("paired");
-        break;
-      case "state":
-        if (msg.room_name) setRoomLabel(msg.room_name);
-        break;
-      case "error":
-        if (msg.code === "pairing_expired") { stopped = true; show("expired"); }
-        else $("error").textContent = msg.message || msg.code;
-        break;
-      default:
-        break;  // captions, cards, playback: the full satellite (later) handles these
-    }
-  }
-
-  function connect() {
-    stopped = false;
-    show("connecting");
-    $("error").textContent = "";
-    const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    ws = new WebSocket(proto + "//" + location.host + "/ws");
-    ws.binaryType = "arraybuffer";
-    ws.onopen = () => {
-      backoff = 1000;
-      const hello = { type: "hello", device_id: deviceId, name: deviceName, ua: navigator.userAgent.slice(0, 512) };
-      const key = load("housemate.device_key");
-      if (key) hello.device_key = key;
-      send(hello);
-    };
-    ws.onmessage = (ev) => {
-      if (typeof ev.data !== "string") return;  // playout audio: not handled by this placeholder
-      try { onMessage(JSON.parse(ev.data)); } catch (e) { /* ignore malformed */ }
-    };
-    ws.onclose = (ev) => {
-      ws = null;
-      if (ev.code === 4401) save("housemate.device_key", null);  // key no longer valid: pair again
-      if (ev.code === 4409) { $("conn-detail").textContent = "Opened on another tab."; show("connecting"); return; }
-      if (stopped) return;
-      $("conn-detail").textContent = "Reconnecting…";
-      show("connecting");
-      setTimeout(connect, backoff);
-      backoff = Math.min(backoff * 2, 15000);
-    };
-  }
-
-  $("room-select").addEventListener("change", () => {
-    $("room-new").hidden = $("room-select").value !== NEW_ROOM;
-  });
-  $("room-form").addEventListener("submit", (ev) => {
-    ev.preventDefault();
-    const sel = $("room-select").value;
-    const room = (sel === NEW_ROOM ? $("room-new").value : sel).trim();
-    if (room) send({ type: "room.set", room: room });
-  });
-  $("retry").addEventListener("click", connect);
-
-  connect();
-})();
-</script>
+<div id="hud" hidden></div>
 </body>
 </html>
