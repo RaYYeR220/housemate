@@ -290,6 +290,8 @@ async def test_send_voice_plays_whole_file(kit, tmp_path):
     assert result.success
     assert kit.hub.pcm("dev-kitchen") == b"\x07\x00" * 4800
     assert kit.adapter.router.turn_for(event.message_id).audio
+    marks = kit.adapter._timings[event.message_id]
+    assert marks["endpoint"] <= marks["tts_begin"] <= marks["first_pcm_out"]  # whole-file replies are timed too
 
 
 async def test_prewarm_sends_a_vetoed_clip_to_the_side_chat(kit):
