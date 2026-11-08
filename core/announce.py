@@ -84,16 +84,31 @@ def tts_paths_from_result(result: str | bytes | dict) -> list[Path]:
 
 
 def _read_wav_pcm16(path: Path, rate: int) -> bytes | None:
-    """The samples of a WAV that already is PCM16 mono at ``rate``, else None."""
+    """The samples of a PCM16 mono WAV at ``rate`` (resampled in-process if the WAV has another
+    rate: local voices such as Piper write 22.05 kHz, and an ffmpeg start costs ~1 s on some
+    machines), else None."""
     if path.suffix.lower() != ".wav":
         return None
     try:
         with wave.open(str(path), "rb") as w:
-            if (w.getnchannels(), w.getsampwidth(), w.getframerate(), w.getcomptype()) == (1, 2, rate, "NONE"):
-                return w.readframes(w.getnframes())
+            if (w.getnchannels(), w.getsampwidth(), w.getcomptype()) != (1, 2, "NONE"):
+                return None
+            src_rate, frames = w.getframerate(), w.readframes(w.getnframes())
     except (wave.Error, EOFError, OSError):
         return None
-    return None
+    if src_rate == rate or not frames:
+        return frames
+    return _resample(frames, src_rate, rate)
+
+
+def _resample(pcm: bytes, src_rate: int, rate: int) -> bytes:
+    """Linear-interpolation resampling of PCM16 mono (speech to a speaker: plenty)."""
+    import numpy as np
+
+    x = np.frombuffer(pcm[: len(pcm) - len(pcm) % 2], dtype="<i2").astype(np.float32)
+    n = int(round(len(x) * rate / src_rate))
+    y = np.interp(np.arange(n) * (src_rate / rate), np.arange(len(x)), x)
+    return np.clip(np.round(y), -32768, 32767).astype("<i2").tobytes()
 
 
 def _run_blocking(cmd: list[str]) -> tuple[bytes, bytes, int]:

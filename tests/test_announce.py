@@ -247,11 +247,28 @@ async def test_decode_to_pcm_reads_matching_wav_directly(tmp_path, monkeypatch):
     assert await decode_to_pcm(path, rate=24000) == frames
 
 
+async def test_decode_to_pcm_resamples_a_wav_without_ffmpeg(tmp_path, monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda name: None)  # a local voice's WAV never needs ffmpeg
+    import numpy as np
+
+    t = np.arange(22050) / 22050
+    tone = (np.sin(2 * np.pi * 440 * t) * 8000).astype("<i2").tobytes()  # 1 s of 440 Hz at 22.05 kHz
+    pcm = await decode_to_pcm(_wav(tmp_path / "piper.wav", 22050, tone), rate=24000)
+    out = np.frombuffer(pcm, "<i2").astype(np.float64)
+    assert len(out) == 24000
+    peak = np.argmax(np.abs(np.fft.rfft(out)))  # still a 440 Hz tone (1 Hz bins over 1 s)
+    assert abs(peak - 440) <= 1
+
+
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
-async def test_decode_to_pcm_resamples_with_ffmpeg(tmp_path):
-    path = _wav(tmp_path / "speech16k.wav", 16000, b"\x00\x10" * 16000)  # 1 s
-    pcm = await decode_to_pcm(path, rate=24000)
-    assert abs(len(pcm) - 48000) <= 400
+async def test_decode_to_pcm_uses_ffmpeg_for_other_formats(tmp_path):
+    import subprocess
+
+    wav = _wav(tmp_path / "speech16k.wav", 16000, b"\x00\x10" * 16000)  # 1 s
+    mp3 = tmp_path / "speech.mp3"
+    subprocess.run([shutil.which("ffmpeg"), "-y", "-loglevel", "error", "-i", str(wav), str(mp3)], check=True)
+    pcm = await decode_to_pcm(mp3, rate=24000)
+    assert abs(len(pcm) - 48000) <= 4000
 
 
 async def test_decode_to_pcm_reports_bad_input(tmp_path):
