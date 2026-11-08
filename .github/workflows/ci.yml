@@ -7,33 +7,36 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     env:
       UV_EXCLUDE_NEWER: "3 days"
       HERMES_HOME: ${{ github.workspace }}/.hermes-ci
+      PYTHONIOENCODING: utf-8
     steps:
       - uses: actions/checkout@v4
         with:
           path: housemate
+      # Hermes v0.23 declares its runtime dependencies for Python >= 3.14 only
+      # (3.11 is an install bridge, never a runtime), so the plugin is tested on 3.14.
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.14"
       - uses: astral-sh/setup-uv@v5
       - name: Install Hermes v0.23.0
         run: |
           git clone --branch v0.23.0 --depth 1 https://github.com/NousResearch/hermes-agent hermes-agent
-          uv venv .venv
-          . .venv/bin/activate
-          uv pip install -e "./hermes-agent[messaging]"
+          cd hermes-agent
+          uv sync --frozen --python "$(command -v python3.14)"
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
       - name: Install plugin and test dependencies
         run: |
-          . .venv/bin/activate
-          uv pip install -r housemate/requirements-dev.txt
-          uv pip install "aiohttp>=3.9,<4" "numpy>=1.26,<3" "onnxruntime>=1.17,<2" "cryptography>=42,<52" "qrcode>=7.4,<9"
+          python -c "import tomllib; print('\n'.join(tomllib.load(open('housemate/pyproject.toml', 'rb'))['project']['dependencies']))" > plugin-deps.txt
+          uv pip install --python hermes-agent/.venv/bin/python -r plugin-deps.txt -r housemate/requirements-dev.txt
       - name: Tests
         run: |
-          . .venv/bin/activate
-          cd housemate && python -m pytest -q -m "not slow"
+          cd housemate
+          "$GITHUB_WORKSPACE/hermes-agent/.venv/bin/python" -m pytest -q -m "not slow"
+      - name: Plugin doctor
+        run: hermes plugins doctor housemate --ci
       - name: Catalog validation
-        run: |
-          . .venv/bin/activate
-          hermes plugins validate housemate --install-deps
+        run: hermes plugins validate housemate --install-deps
