@@ -12,6 +12,15 @@ from types import SimpleNamespace
 import hermes_shim
 
 hermes_shim.install()
+if hermes_shim.HERMES_AVAILABLE:
+    # Real Hermes: ``Platform("housemate")`` only resolves once the platform is registered.
+    from gateway.platform_registry import PlatformEntry, platform_registry
+
+    if not platform_registry.is_registered("housemate"):
+        platform_registry.register(PlatformEntry(
+            name="housemate", label="Housemate", adapter_factory=lambda cfg: None, check_fn=lambda: True,
+            allowed_users_env="HOUSEMATE_ALLOWED_DEVICES", allow_all_env="HOUSEMATE_ALLOW_ALL_DEVICES",
+        ))
 
 from gateway.config import PlatformConfig  # noqa: E402  (after the shim)
 
@@ -149,6 +158,7 @@ class Kit:
         self.adapter = HousemateAdapter(PlatformConfig(enabled=True, extra=dict(extra or {})))
         self.adapter.book = AnswerBook()
         self.adapter._tts_files = self.tts
+        self.adapter._cache_audio = hermes_shim.cache_audio_from_bytes_async  # a temp dir, never a real home
         self.events: list = []
         self.resolved: list[tuple] = []
         self.clarified: list[tuple] = []
