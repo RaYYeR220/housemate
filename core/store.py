@@ -17,7 +17,7 @@ import threading
 import time
 from dataclasses import dataclass
 
-__all__ = ["Device", "HousemateStore", "Room", "slugify"]
+__all__ = ["Device", "HousemateStore", "Room", "TimerRow", "slugify"]
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS devices (
@@ -73,6 +73,24 @@ class Room:
     slug: str
     name: str
     earshot_group: str | None
+
+
+@dataclass(frozen=True)
+class TimerRow:
+    """One row of the ``timers`` table. ``due_at``/``created_at``/``fired_at`` are UTC epoch seconds."""
+
+    id: str
+    room: str
+    kind: str
+    label: str
+    due_at: float
+    created_at: float
+    duration_s: float | None
+    state: str
+    fired_at: float | None = None
+
+
+_TIMER_COLS = "id, room, kind, label, due_at, created_at, duration_s, state, fired_at"
 
 
 def slugify(name: str) -> str:
@@ -213,6 +231,68 @@ class HousemateStore:
             slug = self._ensure_room(room).slug
             value = group.strip() if isinstance(group, str) and group.strip() else None
             self._conn.execute("UPDATE rooms SET earshot_group = ? WHERE slug = ?", (value, slug))
+
+    # --- timers --------------------------------------------------------------------
+
+    def add_timer(self, row: TimerRow) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                f"INSERT INTO timers ({_TIMER_COLS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (row.id, row.room, row.kind, row.label, row.due_at, row.created_at,
+                 row.duration_s, row.state, row.fired_at),
+            )
+
+    def get_timer(self, timer_id: str) -> TimerRow | None:
+        with self._lock:
+            row = self._conn.execute(
+                f"SELECT {_TIMER_COLS} FROM timers WHERE id = ?", (timer_id,)
+            ).fetchone()
+        return TimerRow(*row) if row else None
+
+    def list_timers(
+        self,
+        *,
+        states: tuple[str, ...] | list[str] | None = None,
+        room: str | None = None,
+        due_before: float | None = None,
+    ) -> list[TimerRow]:
+        """Timers ordered by due time, then creation order. ``due_before`` is inclusive."""
+        where, args = [], []
+        if states is not None:
+            states = tuple(states)
+            if not states:
+                return []
+            where.append(f"state IN ({', '.join('?' * len(states))})")
+            args.extend(states)
+        if room is not None:
+            where.append("room = ?")
+            args.append(room)
+        if due_before is not None:
+            where.append("due_at <= ?")
+            args.append(due_before)
+        sql = f"SELECT {_TIMER_COLS} FROM timers"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY due_at, created_at, rowid"
+        with self._lock:
+            rows = self._conn.execute(sql, args).fetchall()
+        return [TimerRow(*r) for r in rows]
+
+    def transition_timer(
+        self, timer_id: str, from_states: tuple[str, ...], to_state: str, *, fired_at: float | None = None
+    ) -> bool:
+        """Compare-and-set the state. False when the timer is gone or not in ``from_states``,
+        which is what makes "ring exactly once" hold across callers and restarts."""
+        from_states = tuple(from_states)
+        if not from_states:
+            return False
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                f"UPDATE timers SET state = ?, fired_at = COALESCE(?, fired_at) "
+                f"WHERE id = ? AND state IN ({', '.join('?' * len(from_states))})",
+                (to_state, fired_at, timer_id, *from_states),
+            )
+            return cur.rowcount == 1
 
     # --- internals (call with the lock held) -------------------------------------------
 
