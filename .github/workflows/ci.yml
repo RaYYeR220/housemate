@@ -1,0 +1,39 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      UV_EXCLUDE_NEWER: "3 days"
+      HERMES_HOME: ${{ github.workspace }}/.hermes-ci
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: housemate
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v5
+      - name: Install Hermes v0.23.0
+        run: |
+          git clone --branch v0.23.0 --depth 1 https://github.com/NousResearch/hermes-agent hermes-agent
+          uv venv .venv
+          . .venv/bin/activate
+          uv pip install -e "./hermes-agent[messaging]"
+      - name: Install plugin and test dependencies
+        run: |
+          . .venv/bin/activate
+          uv pip install -r housemate/requirements-dev.txt
+          uv pip install "aiohttp>=3.9,<4" "numpy>=1.26,<3" "onnxruntime>=1.17,<2" "cryptography>=42,<52" "qrcode>=7.4,<9"
+      - name: Tests
+        run: |
+          . .venv/bin/activate
+          cd housemate && python -m pytest -q -m "not slow"
+      - name: Catalog validation
+        run: |
+          . .venv/bin/activate
+          hermes plugins validate housemate --install-deps

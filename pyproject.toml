@@ -1,0 +1,21 @@
+[project]
+name = "housemate"
+version = "0.1.0"
+description = "Hands-free Hermes in every room: old phones and laptops become room speakers."
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = [
+    "aiohttp>=3.9,<4",
+    "numpy>=1.26,<3",
+    "onnxruntime>=1.17,<2",
+    "cryptography>=42,<52",
+    "qrcode>=7.4,<9",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "slow: needs downloaded wake/VAD models",
+    "hermes: needs a Hermes >= 0.23 install importable",
+]

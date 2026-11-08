@@ -1,0 +1,21 @@
+name: housemate
+label: Housemate
+kind: platform
+version: "0.1.0"
+description: >
+  Hands-free Hermes in every room. Any old phone, tablet or laptop with a
+  browser becomes a room speaker: say the wake word, ask, and hear the answer
+  in the same room. One household conversation across rooms, timers that ring
+  where you set them, intercom, room screens and spoken approvals.
+author: RaYYeR220
+requires_hermes: ">=0.23.0"
+provides_tools: []
+optional_env:
+  - name: HOUSEMATE_HOME_CHANNEL
+    description: "Room that receives cron deliveries by default (e.g. kitchen)"
+    prompt: "Default room for cron delivery"
+    password: false
+  - name: HOUSEMATE_ALLOWED_DEVICES
+    description: "Comma-separated paired device ids allowed to talk to Hermes (empty = every paired device)"
+    prompt: "Allowed device ids"
+    password: false
