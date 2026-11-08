@@ -48,7 +48,7 @@ from .core.announce import PLAY_RATE, Announcer, decode_to_pcm, tts_paths_from_r
 from .core.arbiter import WakeArbiter
 from .core.audio import pcm_to_wav
 from .core.config import HousemateConfig
-from .core.intents import is_stop, parse_choice, parse_yes_no
+from .core.intents import is_skip, is_stop, parse_choice, parse_yes_no, spoken_label
 from .core.playout import PcmRealigner, Playout
 from .core.router import HOUSEHOLD_CHAT, SessionRouter
 from .core.store import slugify
@@ -132,6 +132,7 @@ class _Prompt:
     choices: list[str]
     request_id: str | None = None
     tries: int = 0
+    skippable: bool = False  # a clarify question the user may skip ("Or say skip.")
 
 
 class _ReplyHandle(StreamingTTSHandle):
@@ -1087,11 +1088,15 @@ class HousemateAdapter(BasePlatformAdapter):
         room = turn.room if turn is not None else self._chat_room(chat_id)
         device_id = self._reply_device(chat_id)
         labels = [str(c) for c in (choices or []) if str(c).strip()]
-        entry = _Prompt("clarify", clarify_id, chat_id, session_key, room, device_id, _plain(question), labels)
+        text, skippable = _split_skip_hint(question)
+        entry = _Prompt("clarify", clarify_id, chat_id, session_key, room, device_id, _plain(text), labels,
+                        skippable=skippable)
         self._prompts[clarify_id] = entry
         spoken = entry.question
         if labels and len(labels) <= 6:
-            spoken += " " + "; ".join(f"{i}: {label}" for i, label in enumerate(labels, start=1)) + "."
+            spoken += " " + _read_choices(labels) + "."
+        if skippable:
+            spoken += " Or say skip."
         if not await self._show_prompt(entry):
             self._prompts.pop(clarify_id, None)
             return SendResult(success=False, error=f"no Housemate device is online in {room}")
@@ -1153,6 +1158,14 @@ class HousemateAdapter(BasePlatformAdapter):
                     resolved = 0
                 loop.call_soon_threadsafe(self._approval_done, prompt.id, choice, resolved)
                 return f"{choice} (resolved {resolved})"
+            if prompt.skippable and is_skip(transcript):
+                try:
+                    ok = self._resolve_clarify_card(prompt, clarify_skip_value())
+                except Exception:
+                    log.exception("housemate: skipping the clarify prompt failed")
+                    ok = False
+                loop.call_soon_threadsafe(self._clarify_done, prompt.id, "Skipped.", ok)
+                return "clarify skipped"
             if prompt.choices:
                 pick = parse_choice(transcript, prompt.choices)
                 if pick is None:
@@ -1260,7 +1273,7 @@ class HousemateAdapter(BasePlatformAdapter):
         if prompt.kind == "approval":
             again = "Sorry, I didn't catch that. Say approve, or deny."
         elif prompt.choices:
-            again = "Sorry, which one? " + "; ".join(f"{i}: {c}" for i, c in enumerate(prompt.choices[:6], start=1)) + "."
+            again = "Sorry, which one? " + _read_choices(prompt.choices[:6]) + "."
         else:
             again = "Sorry, I didn't catch that. " + prompt.question
         self._spawn(self._ask(prompt, again))
@@ -1485,6 +1498,29 @@ class HousemateAdapter(BasePlatformAdapter):
     def recent_timings(self) -> list[dict]:
         """Stage times of the last finished turns, oldest first (``hermes housemate bench``)."""
         return list(self._turn_log)
+
+
+def clarify_skip_value() -> str:
+    """What a skipped clarify question resolves to: Hermes's own skip sentinel when available."""
+    try:
+        from tools.clarify_gateway import SKIPPED
+
+        return SKIPPED
+    except Exception:
+        return "skip"  # what a user types to skip; the clarify tool reports it to the model
+
+
+def _split_skip_hint(question: str) -> tuple[str, bool]:
+    """Hermes appends a typed-reply hint (Reply "skip" to skip this question.) on its own last line
+    for chat platforms. A speaker says it differently, so take it off the question."""
+    lines = str(question or "").rstrip().splitlines()
+    if len(lines) > 1 and "skip" in lines[-1].lower():
+        return "\n".join(lines[:-1]).strip(), True
+    return str(question or ""), False
+
+
+def _read_choices(labels: list[str]) -> str:
+    return "; ".join(f"{i}: {spoken_label(label)}" for i, label in enumerate(labels, start=1))
 
 
 def _plain(text: str) -> str:

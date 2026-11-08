@@ -1,6 +1,6 @@
 import pytest
 
-from housemate.core.intents import is_stop, parse_choice, parse_yes_no
+from housemate.core.intents import is_skip, is_stop, parse_choice, parse_yes_no
 
 
 @pytest.mark.parametrize(
@@ -82,3 +82,16 @@ def test_stop_detection(text):
 )
 def test_not_stop(text):
     assert is_stop(text) is False
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("Skip.", True), ("skip it", True), ("Skip this question, please.", True), ("please skip", True),
+    ("skip the pasta", False), ("Pasta", False), ("", False), ("don't skip", False),
+])
+def test_skip_variants(text, expected):
+    assert is_skip(text) is expected
+
+
+def test_choice_ignores_the_recommended_label():
+    assert parse_choice("tea", ["Tea (Recommended)", "Coffee"]) == "Tea (Recommended)"
+    assert parse_choice("Coffee, please.", ["Tea (Recommended)", "Coffee"]) == "Coffee"

@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from typing import Literal, Sequence
 
-__all__ = ["is_stop", "normalize", "parse_choice", "parse_yes_no"]
+__all__ = ["is_skip", "is_stop", "normalize", "parse_choice", "parse_yes_no", "spoken_label"]
 
 _APOSTROPHES = str.maketrans({"’": "'", "‘": "'", "`": "'"})
 _NOT_WORD = re.compile(r"[^a-z0-9' ]+")
@@ -97,13 +97,30 @@ def _spoken_number(tokens: list[str]) -> int | None:
     return _ORDINALS.get(rest[0]) or _CARDINALS.get(rest[0])
 
 
+_RECOMMENDED = re.compile(r"\s*\(recommended\)\s*$", re.I)
+
+
+def spoken_label(choice: str) -> str:
+    """A choice as it is read aloud: without Hermes's "(Recommended)" tag."""
+    return _RECOMMENDED.sub("", str(choice)).strip()
+
+
+_SKIP_FILLER = {"please", "it", "that", "this", "the", "question", "one", "just", "ok", "okay", "lets", "let's"}
+
+
+def is_skip(text: str) -> bool:
+    """A spoken "skip" for a clarify question ("Skip.", "skip it", "please skip this question")."""
+    words = _tokens(text)
+    return "skip" in words and all(w == "skip" or w in _SKIP_FILLER for w in words)
+
+
 def parse_choice(text: str, choices: Sequence[str]) -> str | None:
     """Which of ``choices`` was said: exact label, a number/ordinal (1-9), or an unambiguous
     label prefix ("pizza" -> "Pizza with mushrooms", "pasta please" -> "Pasta")."""
     said = normalize(text)
     if not said or not choices:
         return None
-    labels = [(choice, normalize(choice)) for choice in choices]
+    labels = [(choice, normalize(spoken_label(choice))) for choice in choices]
 
     exact = [choice for choice, label in labels if label and label == said]
     if len(exact) == 1:

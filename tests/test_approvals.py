@@ -172,6 +172,29 @@ async def test_open_clarify_takes_the_whole_answer(kit):
     assert kit.clarified == [("clar-4", "Lasagne.")]
 
 
+async def test_clarify_speaks_without_the_typed_skip_hint(kit):
+    await start_turn(kit)
+    question = 'Would you like tea or coffee?\nReply "skip" to skip this question.'
+    await kit.adapter.send_clarify("household", question, ["Tea (Recommended)", "Coffee"], "clar-5", SESSION)
+    await kit.settle()
+    prompt = kit.hub.controls("dev-kitchen", "prompt")[-1]
+    assert prompt["text"] == "Would you like tea or coffee?"
+    assert prompt["choices"] == ["Tea (Recommended)", "Coffee"]  # the card keeps Hermes's labels
+    assert kit.tts.texts[-1] == "Would you like tea or coffee? 1: Tea; 2: Coffee. Or say skip."
+
+
+async def test_clarify_skip_by_voice(kit):
+    from housemate.adapter import clarify_skip_value
+
+    await start_turn(kit)
+    await kit.adapter.send_clarify("household", 'Which dinner?\nReply "skip" to skip this question.',
+                                   ["Pasta", "Pizza"], "clar-6", SESSION)
+    await kit.settle()
+    await answer_by_voice(kit, "Skip it.")
+    assert kit.clarified == [("clar-6", clarify_skip_value())]
+    assert kit.hub.controls("dev-kitchen", "prompt.clear")[-1]["id"] == "clar-6"
+
+
 # --- ringing timers ------------------------------------------------------------------------------------
 
 
