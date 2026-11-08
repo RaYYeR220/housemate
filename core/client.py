@@ -102,9 +102,8 @@ class HousemateClient:
             return self.timeout
         return _OP_TIMEOUTS.get(op, DEFAULT_TIMEOUT)
 
-    @staticmethod
-    def _local():
-        local = local_services()
+    def _local(self):
+        local = local_services(self.data_dir)
         if local is not None and local[1].is_running():
             return local
         return None

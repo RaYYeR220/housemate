@@ -84,29 +84,40 @@ class HubServices:
 # --- in-process registration ------------------------------------------------------------------
 
 _local_lock = threading.Lock()
-_local: tuple[HubServices, asyncio.AbstractEventLoop] | None = None
+# One hub per profile under ``gateway.multiplex_profiles``, keyed by its plugin data dir ("" = unkeyed).
+_local: dict[str, tuple[HubServices, asyncio.AbstractEventLoop]] = {}
 
 
-def register_local_services(services: HubServices, loop: asyncio.AbstractEventLoop | None = None) -> None:
-    """Make ``services`` reachable in-process; ``loop`` (default: the running one) owns them."""
-    global _local
+def _local_key(key: str | os.PathLike | None) -> str:
+    return os.path.normcase(os.path.abspath(os.fspath(key))) if key else ""
+
+
+def register_local_services(services: HubServices, loop: asyncio.AbstractEventLoop | None = None, *,
+                            key: str | os.PathLike | None = None) -> None:
+    """Make ``services`` reachable in-process; ``loop`` (default: the running one) owns them.
+    ``key``: the profile's plugin data dir, so each profile's tools reach their own hub."""
     if loop is None:
         loop = asyncio.get_running_loop()
     with _local_lock:
-        _local = (services, loop)
+        _local[_local_key(key)] = (services, loop)
 
 
 def unregister_local_services(services: HubServices | None = None) -> None:
-    """Forget the in-process hub (only if it is still ``services``, when given)."""
-    global _local
+    """Forget ``services`` (every in-process hub when None)."""
     with _local_lock:
-        if _local is not None and (services is None or _local[0] is services):
-            _local = None
+        for k in [k for k, v in _local.items() if services is None or v[0] is services]:
+            del _local[k]
 
 
-def local_services() -> tuple[HubServices, asyncio.AbstractEventLoop] | None:
+def local_services(key: str | os.PathLike | None = None) -> tuple[HubServices, asyncio.AbstractEventLoop] | None:
+    """The in-process hub for the profile whose data dir is ``key``. Without a key, or for a hub
+    registered without one, only when it is the only hub in the process (else None: the caller goes
+    through the profile's own control API)."""
     with _local_lock:
-        current = _local
+        entries = dict(_local)
+    current = entries.get(_local_key(key)) if key else None
+    if current is None and len(entries) == 1 and (not key or "" in entries):
+        current = next(iter(entries.values()))
     if current is None or current[1].is_closed():
         return None
     return current

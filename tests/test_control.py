@@ -412,3 +412,24 @@ async def test_timings_op_returns_recent_turns(env):
     env.services.timings = lambda: turns
     result = await asyncio.to_thread(env.client().timings)
     assert result == {"ok": True, "turns": turns}
+
+
+def test_local_services_are_kept_per_profile(tmp_path):
+    """Review L2: under gateway.multiplex_profiles each profile's hub registers in the same process;
+    a tool finds the hub of its own profile (by its plugin data dir), never the last one registered."""
+    loop = asyncio.new_event_loop()
+    a = HubServices(store=None, registry=RoomRegistry(), hub=None, timers=None, announcer=None)
+    b = HubServices(store=None, registry=RoomRegistry(), hub=None, timers=None, announcer=None)
+    try:
+        register_local_services(a, loop, key=tmp_path / "a")
+        register_local_services(b, loop, key=tmp_path / "b")
+        assert local_services(tmp_path / "a")[0] is a
+        assert local_services(tmp_path / "b")[0] is b
+        assert local_services(tmp_path / "c") is None
+        assert local_services() is None  # two hubs: ambiguous, the control API decides
+        unregister_local_services(a)
+        assert local_services()[0] is b
+        assert local_services(tmp_path / "a") is None
+    finally:
+        unregister_local_services()
+        loop.close()

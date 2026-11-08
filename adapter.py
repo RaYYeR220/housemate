@@ -330,7 +330,7 @@ class HousemateAdapter(BasePlatformAdapter):
         self.services = HubServices(store, registry, hub, self.timers, self.announcer, list(self.urls), self.fingerprint,
                                     timings=self.recent_timings, desk=self.desk, mode=lambda: self.router.mode,
                                     set_mode=self._set_mode)
-        register_local_services(self.services, self._loop)
+        register_local_services(self.services, self._loop, key=data_dir)
         self._feed = DeskFeed(self._loop, lambda: desk_state(self.services))
         self.desk.info["wake_word"] = self.cfg.wake_model
         self.control = ControlServer(self.services, data_dir / "control.token", port=self.cfg.control_port)
