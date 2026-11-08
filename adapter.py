@@ -881,11 +881,15 @@ class HousemateAdapter(BasePlatformAdapter):
         device_id = self._reply_device(chat_id, reply_to)
         try:
             if device_id is not None:
+                if turn is not None:
+                    self._mark(turn.message_id, "tts_begin")  # the whole file is ready
                 pcm = await self._decode(Path(audio_path), PLAY_RATE)
                 stream = await self._start_stream(device_id, PLAY_RATE, "rep")
                 if stream is not None:
                     if turn is not None:
                         turn.audio = True
+                        mid = turn.message_id
+                        stream.on_first_pcm = lambda: self._mark(mid, "first_pcm_out")
                     stream.playout.write(pcm[: len(pcm) - len(pcm) % 2])
                     stream.playout.finish()
             if caption:
