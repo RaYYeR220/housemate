@@ -226,6 +226,25 @@ class HousemateStore:
             ).fetchall()
         return [Room(*r) for r in rows]
 
+    def get_room(self, name: str) -> Room | None:
+        try:
+            slug = slugify(name)
+        except ValueError:
+            return None
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT slug, name, earshot_group FROM rooms WHERE slug = ?", (slug,)
+            ).fetchone()
+        return Room(*row) if row else None
+
+    def remove_room(self, name: str) -> bool:
+        """Forget a room; devices assigned to it lose their room and pick one again."""
+        slug = slugify(name)
+        with self._lock, self._conn:
+            cur = self._conn.execute("DELETE FROM rooms WHERE slug = ?", (slug,))
+            self._conn.execute("UPDATE devices SET room = NULL WHERE room = ?", (slug,))
+            return cur.rowcount > 0
+
     def set_earshot_group(self, room: str, group: str | None) -> None:
         with self._lock, self._conn:
             slug = self._ensure_room(room).slug

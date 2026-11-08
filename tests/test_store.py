@@ -131,6 +131,17 @@ def test_set_room_and_earshot_group(store):
     assert store.ensure_room("living-room").earshot_group is None
 
 
+def test_remove_room_unassigns_devices(store):
+    store.upsert_device("dev-a", "Tablet")
+    store.set_room("dev-a", "Living Room")
+    assert store.get_room("LIVING ROOM").slug == "living-room"
+    assert store.remove_room("living room") is True
+    assert store.get_room("living-room") is None and store.list_rooms() == []
+    assert store.get_device("dev-a").room is None
+    assert store.remove_room("living room") is False
+    assert store.get_room("!!!") is None
+
+
 def test_set_room_unknown_device_raises(store):
     with pytest.raises(KeyError):
         store.set_room("nope", "Kitchen")
