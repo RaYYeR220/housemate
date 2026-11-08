@@ -1016,10 +1016,13 @@ function approve(p, room, data) {
       className: 'hm-code-in',
       inputMode: 'numeric',
       autoComplete: 'off',
-      autoFocus: true,
       maxLength: 7,
       placeholder: '000 000',
       'aria-label': 'Code shown on the device',
+      // the dialog focuses its Confirm button on open; put the caret here instead
+      ref: el => { if (el) setTimeout(() => el.focus(), 60) },
+      // the dialog confirms on Space as well as Enter: let a space be typed ("123 456")
+      onKeyDown: ev => { if (ev.key === ' ') ev.stopPropagation() },
       onChange: ev => { typed.value = ev.target.value }
     }),
     onConfirm: async () => {
