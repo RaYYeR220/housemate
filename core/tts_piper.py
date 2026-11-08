@@ -146,8 +146,13 @@ class PiperEngine:
     def stream_pcm(self, text: str, voice: Optional[str] = None) -> Iterator[bytes]:
         """PCM16 LE mono at ``sample_rate()``, one chunk per sentence."""
         piper_voice = self.load(voice)
+        started = time.monotonic()
         with self._lock:
+            waited = time.monotonic() - started
             chunks = [c.audio_int16_bytes for c in piper_voice.synthesize(text)]
+        took = time.monotonic() - started
+        if took > 0.5:
+            log.info("housemate: Piper took %.2f s (%.2f s waiting) for %d characters", took, waited, len(text))
         for pcm in chunks:
             if pcm:
                 yield pcm[: len(pcm) - len(pcm) % 2]
