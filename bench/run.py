@@ -143,6 +143,10 @@ def settings_from_config(cfg: dict) -> dict:
             tts[key] = section[key]
     if section.get("base_url"):
         tts["host"] = _host(section["base_url"])
+    if tts_provider == "housemate-piper" and "voice" not in tts:
+        from ..core.tts_piper import PiperEngine
+
+        tts["voice"] = PiperEngine(config=lambda: cfg).voice_name()
     if isinstance(tts_cfg.get("streaming"), dict):
         tts["streaming"] = {k: v for k, v in tts_cfg["streaming"].items() if k in ("provider", "min_len")}
     platforms = cfg.get("platforms") if isinstance(cfg.get("platforms"), dict) else {}

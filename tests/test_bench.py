@@ -88,3 +88,5 @@ def test_results_metadata_never_contains_keys(monkeypatch):
     assert settings["llm"] == {"provider": "custom", "model": "m", "host": "api.example.com"}
     assert settings["tts"]["model"] == "tts-kokoro" and settings["tts"]["host"] == "api.example.com"
     assert settings["stt"]["model"] == "small" and settings["housemate"]["end_silence_ms"] == 500
+    piper = run.settings_from_config({"tts": {"provider": "housemate-piper", "piper": {"voice": "en_GB-alba-medium"}}})
+    assert piper["tts"] == {"provider": "housemate-piper", "voice": "en_GB-alba-medium"}
