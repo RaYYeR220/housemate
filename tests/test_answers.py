@@ -98,9 +98,19 @@ def test_book_for_device_and_drop():
     book.add(entry(clock, a, device="dev-k"))
     clock.t += 1
     book.add(entry(clock, b, device="dev-k", kind="stop"))
-    assert book.for_device("dev-k").token == b
-    assert book.for_device("dev-o") is None
-    assert [e.token for e in book.drop(kind="stop")] == [b]
+    # a pending approval outranks a newer "stop" for a ringing timer: approving stays possible by voice
     assert book.for_device("dev-k").token == a
-    book.drop(key="req-1")
+    assert book.for_device("dev-o") is None
+    book.drop(kind="approval")
+    assert book.for_device("dev-k").token == b
+    assert [e.token for e in book.drop(kind="stop")] == [b]
     assert book.for_device("dev-k") is None
+
+
+def test_newest_entry_of_the_same_rank_wins():
+    clock = Clock()
+    book = AnswerBook(clock)
+    a, b = new_token(), new_token()
+    book.add(entry(clock, a, device="dev-k", kind="stop"))
+    book.add(entry(clock, b, device="dev-k", kind="stop"))
+    assert book.for_device("dev-k").token == b

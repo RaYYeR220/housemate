@@ -111,7 +111,11 @@ class AnswerBook:
         with self._lock:
             self._purge()
             live = [e for e in self._entries.values() if e.device_id == device_id]
-        return live[-1] if live else None  # insertion order: the newest prompt wins
+        if not live:
+            return None
+        # An approval or clarify question outranks a ringing timer's "stop"; among equals the newest wins.
+        prompts = [e for e in live if e.kind in ("approval", "clarify")]
+        return (prompts or live)[-1]
 
     def drop(self, *, token: str | None = None, key: str | None = None, kind: str | None = None,
              device_id: str | None = None, room: str | None = None) -> list[PendingAnswer]:

@@ -81,6 +81,7 @@ class Playout:
         self.sent_bytes = 0
         self.written_bytes = 0
         self.first_sent_at: float | None = None
+        self.play_end_at: float | None = None  # clock time the device should finish (gaps included)
         self.result: str | None = None
 
     # --- producer side -------------------------------------------------------------------------
@@ -189,6 +190,7 @@ class Playout:
                 if self.first_sent_at is None:
                     self.first_sent_at = now
                 self.sent_bytes += n
+                self.play_end_at = t0 + self.sent_s
         except asyncio.CancelledError:
             self._end("aborted")
             raise

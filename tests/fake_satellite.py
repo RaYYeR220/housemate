@@ -1,8 +1,11 @@
 """A scriptable satellite: speaks the hub's WebSocket protocol without a browser.
 
-Used by the hub tests, and runnable by hand against a live hub:
+Used by the hub tests, and runnable by hand against a live hub. First run: it prints a pairing
+code (approve it with ``hermes housemate pair <code>``) and saves the device key; then it joins a
+room, speaks a 16 kHz WAV in real time and saves the spoken reply:
 
-    python tests/fake_satellite.py --url wss://192.168.1.20:8742/ws --device-id test-sat-1
+    python tests/fake_satellite.py --key-file kitchen.key --room Kitchen \\
+        --wav hey_jarvis_whats_two_plus_two.wav --save reply.wav
 """
 
 from __future__ import annotations

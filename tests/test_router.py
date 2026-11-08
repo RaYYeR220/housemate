@@ -154,3 +154,19 @@ def test_reply_room_unknown_chat_is_none():
 def test_bad_mode_rejected():
     with pytest.raises(ValueError):
         SessionRouter("everyone")
+
+
+def test_dropped_and_expired_are_reported():
+    clock = Clock()
+    router = SessionRouter("household", clock=clock, max_queue=1, turn_timeout_s=60)
+    router.begin_turn(HOUSEHOLD_CHAT, "kitchen", "m1", device_id="dev-k")
+    a, b = utterance("office", "a"), utterance("hall", "b")
+    router.enqueue(a, HOUSEHOLD_CHAT)
+    router.enqueue(b, HOUSEHOLD_CHAT)  # overflow drops a
+    clock.t += 61
+    released = router.expire()
+    assert [item for _, item in released] == [b]
+    dropped, expired = router.take_dropped()
+    assert dropped == [a]
+    assert [t.message_id for t in expired] == ["m1"]
+    assert router.take_dropped() == ([], [])

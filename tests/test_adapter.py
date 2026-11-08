@@ -318,3 +318,37 @@ async def test_gateway_housekeeping_is_shown_not_spoken(kit):
     await kit.settle()
     assert kit.hub.controls("dev-office", "caption")[-1]["role"] == "status"
     assert kit.tts.texts == spoken  # nothing new was spoken
+
+
+async def test_stream_that_never_plays_falls_back_to_hub_speech(kit):
+    event = await speak(kit, "dev-kitchen")
+    fmt = AudioFormat(sample_rate=RATE, channels=1, sample_width=2)
+    handle = await kit.adapter.begin_streaming_tts("household", fmt)
+    await kit.adapter.abort_streaming_tts(handle, "provider error")  # synthesis failed, nothing written
+    await kit.adapter.send("household", "Paris.", reply_to=event.message_id)
+    await kit.settle()
+    assert kit.tts.texts == ["Paris."]  # the hub spoke it instead of leaving the room silent
+    assert kit.listeners["dev-kitchen"].called("open_followup") == []
+
+
+async def test_reply_spoken_once_even_in_parts(kit):
+    event = await speak(kit, "dev-kitchen")
+    await kit.adapter.send("household", "Part one.", reply_to=event.message_id)
+    await kit.adapter.send("household", "Part two.", reply_to=event.message_id)
+    await kit.settle()
+    assert kit.tts.texts == ["Part one."]
+
+
+async def test_queue_overflow_puts_the_dropped_room_back_to_idle(tmp_path):
+    k = Kit(tmp_path).wire()
+    k.add_device("dev-kitchen", "Kitchen")
+    k.add_device("dev-office", "Office")
+    k.add_device("dev-hall", "Hall")
+    k.adapter.router.max_queue = 1
+    k.adapter._on_utterance("dev-kitchen", utterance(), "wake")
+    k.adapter._on_utterance("dev-office", utterance(), "wake")
+    k.adapter._on_utterance("dev-hall", utterance(), "wake")  # pushes the office question out
+    await k.settle()
+    assert k.hub.controls("dev-office", "state")[-1]["state"] == "idle"
+    assert k.hub.controls("dev-office", "caption")[-1]["role"] == "status"
+    assert k.hub.controls("dev-hall", "state")[-1]["state"] == "thinking"

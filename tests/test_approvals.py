@@ -206,3 +206,35 @@ async def test_tap_stop_timer(kit):
     kit.timers.ringing.add("kitchen")
     await kit.adapter._on_control("dev-kitchen", {"type": "ui.action", "kind": "stop_timer", "id": ""})
     assert kit.timers.stopped == ["kitchen"]
+
+
+async def test_approval_with_no_device_online_is_not_armed(kit):
+    await start_turn(kit)
+    kit.drop("dev-kitchen")
+    kit.drop("dev-office")
+    result = await kit.adapter._send_exec_approval_prompt(approval("req-9"))
+    assert result.success is False
+    assert "req-9" not in kit.adapter._prompts
+    assert kit.adapter.book.entries() == []
+    assert kit.tts.texts == []  # nothing spoken to nobody
+
+
+async def test_approval_reachable_by_voice_while_a_timer_rings(kit):
+    await ask_approval(kit)
+    kit.timers.ringing.add("kitchen")
+    await kit.adapter._on_timer_ring(type("T", (), {"room": "kitchen"})())
+    await answer_by_voice(kit, "Approve.")
+    assert kit.resolved == [(SESSION, "once", "req-1")]
+    assert kit.timers.stopped == []
+
+
+async def test_resolver_error_in_the_hook_still_clears_the_card(kit):
+    await ask_approval(kit)
+
+    def broken(*args):
+        raise RuntimeError("approval store went away")
+
+    kit.adapter._resolve_approval = broken
+    out = await answer_by_voice(kit, "Approve.")
+    assert out["action"] == "block"
+    assert kit.hub.controls("dev-kitchen", "prompt.clear")[-1]["id"] == "req-1"

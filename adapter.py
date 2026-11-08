@@ -141,6 +141,7 @@ class _ReplyHandle(StreamingTTSHandle):
         self.stream = stream
         self.realign = PcmRealigner()
         self.chunks = 0
+        self.turn: Any = None  # the router turn this stream answers
 
 
 class _HubTap:
@@ -202,6 +203,7 @@ class HousemateAdapter(BasePlatformAdapter):
         self._captions: dict[str, deque] = {}
         self._prompts: dict[str, _Prompt] = {}
         self._idle_timers: dict[str, asyncio.TimerHandle] = {}
+        self._states: dict[str, str] = {}  # last state asked of each device
         self._timings: dict[str, dict[str, float]] = {}
         self._bg: set[asyncio.Task] = set()
         self._timer_task: asyncio.Task | None = None
@@ -459,6 +461,7 @@ class HousemateAdapter(BasePlatformAdapter):
             self.router.enqueue(item, chat_id)
             log.info("housemate: %s spoke while a turn is running; queued (%d waiting)",
                      room, self.router.queued(chat_id))
+            self._settle_dropped()
             return
         self.router.begin_turn(chat_id, room, item.message_id, device_id)
         self._spawn(self._dispatch(chat_id, item))
@@ -525,10 +528,22 @@ class HousemateAdapter(BasePlatformAdapter):
             return
         self._log_timing(turn.message_id)
         nxt = self.router.on_turn_end(chat_id, message_id)
+        self._settle_dropped()
         if nxt is not None:
             self.router.begin_turn(chat_id, nxt.room, nxt.message_id, nxt.device_id)
             log.info("housemate: answering the queued question from %s", nxt.room)
             self._spawn(self._dispatch(chat_id, nxt))
+
+    def _settle_dropped(self) -> None:
+        """Questions the queue gave up on, and turns that timed out, leave no room "thinking"."""
+        dropped, expired = self.router.take_dropped()
+        for item in dropped:
+            log.info("housemate: dropped a queued question from %s", item.room)
+            self._set_state(item.device_id, "idle")
+            self._spawn(self._caption_room(item.room, "status", "Sorry, I couldn't get to that. Please ask again."))
+        for turn in expired:
+            if turn.device_id and turn.device_id not in self._playing:
+                self._set_state(turn.device_id, "idle")
 
     async def on_processing_complete(self, event: MessageEvent, outcome: Any) -> None:
         """Backup turn-end signal (fires after delivery); the final ``send()`` usually came first."""
@@ -553,6 +568,7 @@ class HousemateAdapter(BasePlatformAdapter):
                     log.warning("housemate: a turn in %s timed out; answering the next question", chat_id)
                     self.router.begin_turn(chat_id, item.room, item.message_id, item.device_id)
                     self._spawn(self._dispatch(chat_id, item))
+                self._settle_dropped()
                 cutoff = time.time() - 900
                 for mid in [m for m, t in self._timings.items() if t.get("captured", 0) < cutoff]:
                     self._timings.pop(mid, None)
@@ -630,6 +646,7 @@ class HousemateAdapter(BasePlatformAdapter):
 
     def _on_disconnect(self, device_id: str) -> None:
         self._refresh_allowlist()  # a revoked device loses access at once
+        self._states.pop(device_id, None)
         listener = self.listeners.pop(device_id, None)
         if listener is not None:
             listener.close()
@@ -708,7 +725,8 @@ class HousemateAdapter(BasePlatformAdapter):
         if turn is not None and turn.chat_id == chat_id:
             self._mark(turn.message_id, "reply_text")
             await self._caption_room(turn.room, "assistant", text)
-            if not turn.audio and self.cfg.speak_replies and turn.device_id:
+            if not turn.audio and not turn.stream_open and self.cfg.speak_replies and turn.device_id:
+                turn.audio = True  # once per turn, even if Hermes sends the answer in parts
                 self._spawn(self._speak_reply(turn.device_id, text, turn.message_id))
             elif turn.device_id and turn.device_id not in self._playing:
                 self._set_state(turn.device_id, "idle")
@@ -759,19 +777,27 @@ class HousemateAdapter(BasePlatformAdapter):
 
     async def begin_streaming_tts(self, chat_id: str, audio_format: AudioFormat,
                                   metadata: Optional[dict[str, Any]] = None) -> Optional[StreamingTTSHandle]:
-        if not self.supports_streaming_tts(chat_id, audio_format):
+        try:
+            if not self.supports_streaming_tts(chat_id, audio_format):
+                return None
+            device_id = self._reply_device(chat_id)
+            turn = self.router.active_turn(chat_id)
+            stream = await self._start_stream(device_id, int(audio_format.sample_rate), "rep")
+            if stream is None:
+                return None
+            handle = _ReplyHandle(chat_id, audio_format, stream)
+            if turn is not None:
+                turn.stream_open = True
+                handle.turn = turn
+                mid = turn.message_id
+                self._mark(mid, "tts_begin")
+                stream.on_first_pcm = lambda: self._mark(mid, "first_pcm_out")
+            return handle
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("housemate: could not open the audio stream; Hermes falls back to whole files")
             return None
-        device_id = self._reply_device(chat_id)
-        turn = self.router.active_turn(chat_id)
-        stream = await self._start_stream(device_id, int(audio_format.sample_rate), "rep")
-        if stream is None:
-            return None
-        if turn is not None:
-            turn.audio = True
-            mid = turn.message_id
-            self._mark(mid, "tts_begin")
-            stream.on_first_pcm = lambda: self._mark(mid, "first_pcm_out")
-        return _ReplyHandle(chat_id, audio_format, stream)
 
     async def write_streaming_tts(self, handle: StreamingTTSHandle, chunk: bytes) -> None:
         if not isinstance(handle, _ReplyHandle) or handle.aborted or not chunk:
@@ -786,6 +812,8 @@ class HousemateAdapter(BasePlatformAdapter):
             if pcm:
                 handle.stream.playout.write(pcm)
                 handle.audible = True
+                if handle.turn is not None:
+                    handle.turn.audio = True
         except Exception:
             log.exception("housemate: streaming audio failed")
 
@@ -793,8 +821,9 @@ class HousemateAdapter(BasePlatformAdapter):
         if not isinstance(handle, _ReplyHandle):
             return
         handle.realign.flush()
-        if interrupted:
-            handle.stream.playout.abort()
+        self._close_turn_stream(handle)
+        if interrupted or not handle.audible:
+            handle.stream.playout.abort()  # nothing was heard: no follow-up window after silence
         else:
             handle.stream.playout.finish()
 
@@ -802,12 +831,18 @@ class HousemateAdapter(BasePlatformAdapter):
         if not isinstance(handle, _ReplyHandle):
             return
         handle.aborted = True
+        self._close_turn_stream(handle)
         reason = (error or "").lower()
-        if error and "interrupt" not in reason and "cancel" not in reason:
+        if error and handle.audible and "interrupt" not in reason and "cancel" not in reason:
             # Synthesis gave up (e.g. the finalisation timeout on a long answer): play what came.
             handle.stream.playout.finish()
         else:
             handle.stream.playout.abort()
+
+    @staticmethod
+    def _close_turn_stream(handle: "_ReplyHandle") -> None:
+        if handle.turn is not None:
+            handle.turn.stream_open = False
 
     async def send_voice(self, chat_id: str, audio_path: str, caption: Optional[str] = None,
                          reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
@@ -845,6 +880,9 @@ class HousemateAdapter(BasePlatformAdapter):
         stream_id = f"{kind}-{uuid.uuid4().hex[:12]}"
         if not await self.hub.send_control(device_id, {"type": "play.begin", "stream_id": stream_id, "sample_rate": rate}):
             return None
+        raced = self._streams.get(device_id)
+        if raced is not None and not raced.playout.ended:
+            raced.playout.abort()  # another stream started while play.begin was in flight
         hub = self.hub
         stream: _Stream
 
@@ -912,8 +950,10 @@ class HousemateAdapter(BasePlatformAdapter):
     def _expect_playback_end(self, device_id: str, stream_id: str, playout: Playout) -> None:
         """Our playout is sent; the device reports ``playback.done`` when it is heard. In case
         that report never comes, finish it ourselves a little after it must have ended."""
-        start = playout.first_sent_at if playout.first_sent_at is not None else time.monotonic()
-        remaining = start + playout.sent_s - time.monotonic()
+        end = playout.play_end_at
+        if end is None:
+            end = (playout.first_sent_at or time.monotonic()) + playout.sent_s
+        remaining = end - time.monotonic()
         self._arm_playback_timer(device_id, stream_id, max(0.0, remaining) + PLAYBACK_GRACE_S)
 
     def _arm_playback_timer(self, device_id: str, stream_id: str, delay: float) -> None:
@@ -968,8 +1008,7 @@ class HousemateAdapter(BasePlatformAdapter):
 
         def go_idle() -> None:
             self._idle_timers.pop(device_id, None)
-            conn = self.registry.get(device_id) if self.registry is not None else None
-            if conn is not None and conn.state == "listening" and device_id not in self._playing:
+            if self._state_of(device_id) == "listening" and device_id not in self._playing:
                 self._set_state(device_id, "idle")
 
         self._idle_timers[device_id] = self._loop.call_later(seconds, go_idle)
@@ -1027,13 +1066,13 @@ class HousemateAdapter(BasePlatformAdapter):
         entry = _Prompt("approval", card_id, chat_id, prompt.session_key, room, device_id, question,
                         ["Approve", "Deny"], request_id=prompt.request_id)
         self._prompts[card_id] = entry
-        shown = await self._show_prompt(entry)
+        if not await self._show_prompt(entry):
+            self._prompts.pop(card_id, None)
+            log.warning("housemate: no device online in %s for the approval; it will time out (deny)", room)
+            return SendResult(success=False, error=f"no Housemate device is online in {room}")
         if device_id is not None:
             self._arm_answer(entry)
             self._spawn(self._ask(entry, question))
-        if not shown:
-            log.warning("housemate: no device online in %s for the approval; it will time out (deny)", room)
-            return SendResult(success=False, error=f"no Housemate device is online in {room}")
         return SendResult(success=True, message_id=card_id)
 
     async def send_clarify(self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,
@@ -1047,12 +1086,12 @@ class HousemateAdapter(BasePlatformAdapter):
         spoken = entry.question
         if labels and len(labels) <= 6:
             spoken += " " + "; ".join(f"{i}: {label}" for i, label in enumerate(labels, start=1)) + "."
-        shown = await self._show_prompt(entry)
+        if not await self._show_prompt(entry):
+            self._prompts.pop(clarify_id, None)
+            return SendResult(success=False, error=f"no Housemate device is online in {room}")
         if device_id is not None:
             self._arm_answer(entry)
             self._spawn(self._ask(entry, spoken))
-        if not shown:
-            return SendResult(success=False, error=f"no Housemate device is online in {room}")
         return SendResult(success=True, message_id=clarify_id)
 
     async def retire_clarify_card(self, clarify_id: str, notice: str) -> None:
@@ -1101,7 +1140,11 @@ class HousemateAdapter(BasePlatformAdapter):
                 if choice is None:
                     loop.call_soon_threadsafe(self._reprompt, prompt.id)
                     return f"not an approve/deny answer: {transcript[:60]!r}"
-                resolved = self._resolve_approval_card(prompt, choice)
+                try:
+                    resolved = self._resolve_approval_card(prompt, choice)
+                except Exception:
+                    log.exception("housemate: resolving the approval failed")
+                    resolved = 0
                 loop.call_soon_threadsafe(self._approval_done, prompt.id, choice, resolved)
                 return f"{choice} (resolved {resolved})"
             if prompt.choices:
@@ -1114,7 +1157,11 @@ class HousemateAdapter(BasePlatformAdapter):
                 if not pick:
                     loop.call_soon_threadsafe(self._reprompt, prompt.id)
                     return "empty answer"
-            ok = self._resolve_clarify_card(prompt, pick)
+            try:
+                ok = self._resolve_clarify_card(prompt, pick)
+            except Exception:
+                log.exception("housemate: resolving the clarify prompt failed")
+                ok = False
             loop.call_soon_threadsafe(self._clarify_done, prompt.id, pick, ok)
             return f"clarify -> {pick!r} ({'resolved' if ok else 'already closed'})"
 
@@ -1275,7 +1322,7 @@ class HousemateAdapter(BasePlatformAdapter):
         if self.timers is not None and not self.timers.is_ringing(room):
             self.book.drop(kind="stop", room=room)
             for conn in self.registry.devices_in(room):
-                if conn.state == "ringing":
+                if self._state_of(conn.device_id) == "ringing":
                     self._set_state(conn.device_id, "idle")
 
     async def _push_timers(self, device_id: str) -> None:
@@ -1308,15 +1355,18 @@ class HousemateAdapter(BasePlatformAdapter):
             return False
 
     async def _send_state(self, device_id: str, state: str) -> None:
+        self._states[device_id] = state
         await self._send(device_id, {"type": "state", "state": state})
 
+    def _state_of(self, device_id: str) -> str:
+        return self._states.get(device_id, "idle")
+
     def _set_state(self, device_id: str | None, state: str) -> None:
-        if not device_id or self.hub is None:
+        """Tell a device what it is doing. Sends go out in call order; the newest request wins."""
+        if not device_id or self.hub is None or self._states.get(device_id) == state:
             return
-        conn = self.registry.get(device_id) if self.registry is not None else None
-        if conn is not None and conn.state == state:
-            return
-        self._spawn(self._send_state(device_id, state))
+        self._states[device_id] = state
+        self._spawn(self._send(device_id, {"type": "state", "state": state}))
 
     async def _caption_room(self, room: str | None, role: str, text: str) -> None:
         if not room or not text:

@@ -38,6 +38,7 @@ class Turn:
     device_id: str | None
     started_at: float
     audio: bool = False  # spoken audio reached a device for this turn
+    stream_open: bool = False  # Hermes opened a TTS stream for it (audio may still come)
     reserved: bool = False  # released from the queue, not yet handed to Hermes
     ended_at: float | None = None
     clock: Callable[[], float] | None = None
@@ -78,6 +79,8 @@ class SessionRouter:
         self._last: dict[str, Turn] = {}
         self._turns: OrderedDict[str, Turn] = OrderedDict()  # message id -> turn (recent)
         self._queues: dict[str, deque[_Queued]] = {}
+        self.dropped: list[Any] = []  # queued utterances given up on (overflow, too old): tell the room
+        self.expired: list[Turn] = []  # turns ended by the safety timeout
 
     # --- routing -------------------------------------------------------------------------------
 
@@ -136,7 +139,13 @@ class SessionRouter:
         queue = self._queues.setdefault(chat_id, deque())
         queue.append(_Queued(item, self._clock()))
         while len(queue) > self.max_queue:
-            queue.popleft()
+            self.dropped.append(queue.popleft().item)
+
+    def take_dropped(self) -> tuple[list[Any], list[Turn]]:
+        """Utterances dropped from the queue and turns that timed out since the last call."""
+        dropped, expired = self.dropped, self.expired
+        self.dropped, self.expired = [], []
+        return dropped, expired
 
     def queued(self, chat_id: str) -> int:
         return len(self._queues.get(chat_id) or ())
@@ -164,6 +173,7 @@ class SessionRouter:
             if now - turn.started_at >= self.turn_timeout_s:
                 del self._active[chat_id]
                 turn.ended_at = now
+                self.expired.append(turn)
                 item = self._release(chat_id)
                 if item is not None:
                     released.append((chat_id, item))
@@ -175,7 +185,8 @@ class SessionRouter:
         while queue:
             entry = queue.popleft()
             if now - entry.at > self.queue_ttl_s:
-                continue  # asked too long ago to answer now
+                self.dropped.append(entry.item)  # asked too long ago to answer now
+                continue
             item = entry.item
             message_id = getattr(item, "message_id", None) or f"queued-{id(item)}"
             room = getattr(item, "room", None) or "unknown"
