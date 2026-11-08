@@ -75,3 +75,11 @@ def register(ctx) -> None:
     except Exception:
         pass
     ctx.register_platform(**kwargs)
+
+    # Spoken answers to approvals / clarify prompts / ringing timers arrive in a side chat; this
+    # hook applies them and vetoes that side turn (see core/answers.py). Gateway-only, cheap.
+    register_hook = getattr(ctx, "register_hook", None)
+    if callable(register_hook):
+        from .core.answers import pre_llm_call
+
+        register_hook("pre_llm_call", pre_llm_call)

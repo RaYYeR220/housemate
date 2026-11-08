@@ -16,7 +16,7 @@ import logging
 from pathlib import Path
 from typing import Any, Callable
 
-__all__ = ["HANDLERS", "TOOLSET", "data_dir", "register_tools", "registered_for", "session_room"]
+__all__ = ["HANDLERS", "TOOLSET", "data_dir", "dispatch_tool", "register_tools", "registered_for", "session_room"]
 
 log = logging.getLogger(__name__)
 
@@ -64,6 +64,29 @@ def client():
     from .core.client import HousemateClient
 
     return HousemateClient(data_dir())
+
+
+# --- Hermes tools the hub itself uses (text-to-speech for announcements and prompts) ------------------
+
+_dispatch: Callable[..., Any] | None = None
+
+
+def remember_dispatch(ctx) -> None:
+    """Keep the plugin context's ``dispatch_tool`` so the adapter can call Hermes tools."""
+    global _dispatch
+    fn = getattr(ctx, "dispatch_tool", None)
+    if callable(fn):
+        _dispatch = fn
+
+
+def dispatch_tool(name: str, args: dict) -> Any:
+    """Run a Hermes tool (blocking) and return its JSON result: through the plugin context when
+    registration handed us one, else through the public tool registry."""
+    if _dispatch is not None:
+        return _dispatch(name, args)
+    from tools.registry import registry
+
+    return registry.dispatch(name, args)
 
 
 # --- handlers ------------------------------------------------------------------------------------
@@ -287,6 +310,7 @@ def register_tools(ctx) -> None:
     from .commands import register_surface
 
     register_surface(ctx)
+    remember_dispatch(ctx)
     manifest = getattr(ctx, "manifest", None)
     if manifest is not None:
         _registered_manifests.append(manifest)

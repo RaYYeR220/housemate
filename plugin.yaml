@@ -19,6 +19,10 @@ provides_tools:
   - housemate_timer_list
   - housemate_timer_cancel
   - housemate_show
+# pre_llm_call applies spoken answers (approve/deny, a clarify choice, "stop") sent to the
+# housemate-answers side chat and vetoes that side turn; it ignores every other message.
+provides_hooks:
+  - pre_llm_call
 optional_env:
   - name: HOUSEMATE_HOME_CHANNEL
     description: "Room that receives cron deliveries by default (e.g. kitchen)"
