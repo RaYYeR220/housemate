@@ -130,3 +130,20 @@ def test_provider_streams_pcm_for_the_gateway(tmp_path):
         next(iter(provider.stream("Four.", format="opus")))
     written = provider.synthesize("Four.", str(tmp_path / "reply.mp3"), format="mp3")
     assert written.endswith(".wav") and Path(written).exists()  # WAV is what Piper makes; no ffmpeg round trip
+
+
+def test_voice_loaded_once_per_process_even_with_two_providers(tmp_path):
+    # Hermes may register the plugin's provider again (re-discovery); the voice must stay loaded.
+    voice_files(tmp_path / "voices", DEFAULT_VOICE)
+    loads = []
+    voice = FakeVoice()
+
+    def loader(path):
+        loads.append(path)
+        return voice
+
+    first = PiperEngine(voices_dir=lambda: tmp_path / "voices", config=dict, loader=loader)
+    second = PiperEngine(voices_dir=lambda: tmp_path / "voices", config=dict, loader=loader)
+    list(first.stream_pcm("One."))
+    list(second.stream_pcm("Two."))
+    assert len(loads) == 1

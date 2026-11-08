@@ -19,6 +19,7 @@ import logging
 import subprocess
 import sys
 import threading
+import time
 import wave
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
@@ -66,8 +67,14 @@ def _piper_installed() -> bool:
         return False
 
 
+# Loaded voices and the synthesis lock are per process, not per engine: Hermes may register the
+# plugin's provider more than once (re-discovery), and a voice takes seconds to load.
+_VOICES: dict[tuple[str, int], Any] = {}
+_LOCK = threading.Lock()  # espeak-ng phonemisation is not thread-safe either
+
+
 class PiperEngine:
-    """Voice lookup, loading (once per voice), and serialised synthesis to PCM or WAV."""
+    """Voice lookup, loading (once per voice per process), and serialised synthesis."""
 
     def __init__(
         self,
@@ -83,8 +90,7 @@ class PiperEngine:
         self._loader = loader
         self._downloader = downloader
         self._available = available
-        self._voices: dict[Path, Any] = {}
-        self._lock = threading.Lock()  # espeak-ng phonemisation is not thread-safe
+        self._lock = _LOCK
 
     def available(self) -> bool:
         return bool(self._available())
@@ -120,8 +126,9 @@ class PiperEngine:
 
     def load(self, voice: Optional[str] = None) -> Any:
         path = self._path(voice)
+        key = (str(path), id(self._loader))
         with self._lock:
-            loaded = self._voices.get(path)
+            loaded = _VOICES.get(key)
             if loaded is not None:
                 return loaded
             if not path.exists():
@@ -130,8 +137,10 @@ class PiperEngine:
                     raise FileNotFoundError(f"Piper voice {path} not found")
                 log.info("housemate: downloading Piper voice %s", name)
                 self._downloader(name, path.parent)
+            started = time.monotonic()
             loaded = self._loader(path)
-            self._voices[path] = loaded
+            _VOICES[key] = loaded
+            log.info("housemate: Piper voice %s loaded in %.1f s", path.stem, time.monotonic() - started)
             return loaded
 
     def stream_pcm(self, text: str, voice: Optional[str] = None) -> Iterator[bytes]:
