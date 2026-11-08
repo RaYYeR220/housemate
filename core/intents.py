@@ -1,0 +1,152 @@
+"""Tiny deterministic parsers for spoken answers: yes/no, "the second one", "stop".
+
+Used where a full agent turn would be wrong or too slow: answering an approval prompt, picking a
+clarify choice, silencing a ringing timer. Everything here fails closed: an answer that is not
+clearly "approve" is never read as approve, and anything ambiguous returns None so the caller can
+ask again or let the prompt time out.
+"""
+
+from __future__ import annotations
+
+import re
+from typing import Literal, Sequence
+
+__all__ = ["is_stop", "normalize", "parse_choice", "parse_yes_no"]
+
+_APOSTROPHES = str.maketrans({"’": "'", "‘": "'", "`": "'"})
+_NOT_WORD = re.compile(r"[^a-z0-9' ]+")
+
+
+def normalize(text: str) -> str:
+    """Lowercase, straight apostrophes, punctuation to spaces, single spaces."""
+    s = str(text or "").translate(_APOSTROPHES).lower()
+    s = _NOT_WORD.sub(" ", s)
+    s = " ".join(tok.strip("'") for tok in s.split())
+    return " ".join(s.split())
+
+
+def _tokens(text: str) -> list[str]:
+    return normalize(text).split()
+
+
+def _find(tokens: list[str], phrase: tuple[str, ...]) -> list[int]:
+    n = len(phrase)
+    return [i for i in range(len(tokens) - n + 1) if tuple(tokens[i : i + n]) == phrase]
+
+
+# --- yes / no ----------------------------------------------------------------------------------
+
+_APPROVE = [
+    ("approve",), ("approved",), ("yes",), ("yeah",), ("yep",), ("yup",),
+    ("do", "it"), ("go", "ahead"), ("confirm",), ("confirmed",),
+]
+_DENY = [
+    ("deny",), ("denied",), ("no",), ("nope",), ("nah",), ("don't",), ("dont",), ("do", "not"),
+    ("stop",), ("cancel",),
+]
+_NEGATORS = {"no", "don't", "dont", "not", "never"}
+
+
+def parse_yes_no(text: str) -> Literal["approve", "deny"] | None:
+    """"Approve." -> approve, "no thanks" -> deny, "maybe" -> None.
+
+    Both an approve and a deny word ("yes no") is ambiguous -> None. An approve phrase right
+    after a negation ("don't do it") counts as deny.
+    """
+    tokens = _tokens(text)
+    if not tokens:
+        return None
+    approve = 0
+    for phrase in _APPROVE:
+        for i in _find(tokens, phrase):
+            if i > 0 and tokens[i - 1] in _NEGATORS:
+                continue  # "don't do it", "do not go ahead"
+            approve += 1
+    deny = sum(len(_find(tokens, phrase)) for phrase in _DENY)
+    if approve and not deny:
+        return "approve"
+    if deny and not approve:
+        return "deny"
+    return None
+
+
+# --- numbered / labelled choices -----------------------------------------------------------------
+
+_ORDINALS = {
+    "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5,
+    "sixth": 6, "seventh": 7, "eighth": 8, "ninth": 9,
+    **{f"{n}{suffix}": n for n, suffix in zip(range(1, 10), ("st", "nd", "rd", "th", "th", "th", "th", "th", "th"))},
+}
+_CARDINALS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9,
+    **{str(n): n for n in range(1, 10)},
+}
+_CHOICE_FILLER = {
+    "the", "a", "an", "option", "number", "choice", "item", "please", "go", "with", "pick", "choose",
+    "i", "i'll", "ill", "take", "want", "that", "is", "it", "let's", "lets", "say", "answer", "my",
+    "its", "it's", "um", "uh", "ok", "okay",
+}
+
+
+def _spoken_number(tokens: list[str]) -> int | None:
+    rest = [t for t in tokens if t not in _CHOICE_FILLER]
+    if any(t in _ORDINALS for t in rest):
+        rest = [t for t in rest if t not in ("one", "ones")]  # "the second one"
+    if len(rest) != 1:
+        return None
+    return _ORDINALS.get(rest[0]) or _CARDINALS.get(rest[0])
+
+
+def parse_choice(text: str, choices: Sequence[str]) -> str | None:
+    """Which of ``choices`` was said: exact label, a number/ordinal (1-9), or an unambiguous
+    label prefix ("pizza" -> "Pizza with mushrooms", "pasta please" -> "Pasta")."""
+    said = normalize(text)
+    if not said or not choices:
+        return None
+    labels = [(choice, normalize(choice)) for choice in choices]
+
+    exact = [choice for choice, label in labels if label and label == said]
+    if len(exact) == 1:
+        return exact[0]
+
+    number = _spoken_number(said.split())
+    if number is not None:
+        return choices[number - 1] if number <= len(choices) else None
+
+    prefixed = [
+        choice for choice, label in labels
+        if label and (label.startswith(said + " ") or said.startswith(label + " "))
+    ]
+    return prefixed[0] if len(prefixed) == 1 else None
+
+
+# --- stop ------------------------------------------------------------------------------------------
+
+_STOP_PHRASES = [
+    ("turn", "it", "off"), ("turn", "that", "off"), ("turn", "off"), ("switch", "it", "off"),
+    ("switch", "off"), ("shut", "up"), ("be", "quiet"), ("that's", "enough"), ("thats", "enough"),
+    ("that", "is", "enough"),
+]
+_STOP_WORDS = {"stop", "quiet", "silence", "enough", "cancel", "dismiss", "off"}
+_STOP_FILLER = {
+    "hey", "hi", "hermes", "jarvis", "ok", "okay", "please", "now", "it", "that", "this", "the",
+    "timer", "timers", "alarm", "alarms", "music", "ringing", "sound", "noise", "thanks", "thank",
+    "you", "all", "right", "alright", "oh", "um", "uh", "just", "already",
+}
+
+
+def is_stop(text: str) -> bool:
+    """A short "stop" utterance ("OK, stop.", "hey hermes stop", "turn it off", "be quiet").
+
+    Everything said must be stop words or filler, so "bus stop times" and "don't stop" are not.
+    """
+    tokens = _tokens(text)
+    for phrase in _STOP_PHRASES:
+        n = len(phrase)
+        i = 0
+        while i <= len(tokens) - n:
+            if tuple(tokens[i : i + n]) == phrase:
+                tokens[i : i + n] = ["stop"]
+            i += 1
+    rest = [t for t in tokens if t not in _STOP_FILLER]
+    return bool(rest) and all(t in _STOP_WORDS for t in rest)
