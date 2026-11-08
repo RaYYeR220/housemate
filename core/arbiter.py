@@ -11,7 +11,8 @@ An earshot group is the room's ``earshot_group`` when set, else the room itself.
 
 The arbiter also tracks which devices are playing audio, per earshot group, so listeners
 can apply the echo guard to the whole group. All methods are thread-safe (listeners call
-them from worker threads).
+them from worker threads). ``on_decide`` callbacks see every decided round (the Rooms page
+draws it); they run on the listener thread under the arbiter's lock, so keep them tiny.
 """
 
 from __future__ import annotations
@@ -80,6 +81,12 @@ class WakeArbiter:
         self._winners: deque[WakeWinner] = deque(maxlen=max_pending)
         self._last_losers: list[str] = []
         self._playing: dict[str, str] = {}  # device id -> earshot key
+        self._decide_cbs: list[Callable[[WakeWinner], None]] = []
+
+    def on_decide(self, cb: Callable[[WakeWinner], None]) -> None:
+        """``cb(winner)`` once per decided round (``winner.losers`` = the devices that deferred)."""
+        with self._lock:
+            self._decide_cbs.append(cb)
 
     # --- arbitration ---------------------------------------------------------------------
 
@@ -158,7 +165,13 @@ class WakeArbiter:
         for dev in losers:
             self._outcomes[dev] = "lost"
         self._decided[key] = (rnd.start, win.device_id)
-        self._winners.append(WakeWinner(win.device_id, win.room, win.group, win.score, win.energy, win.at, losers))
+        winner = WakeWinner(win.device_id, win.room, win.group, win.score, win.energy, win.at, losers)
+        self._winners.append(winner)
+        for cb in list(self._decide_cbs):
+            try:
+                cb(winner)
+            except Exception:
+                pass  # an observer must never break arbitration
 
     # --- earshot playback state (echo guard) ---------------------------------------------
 

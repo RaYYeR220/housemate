@@ -66,8 +66,20 @@ class HousemateClient:
     def show(self, title: str, body: str, room: str | None = None, session_room: str | None = None) -> dict:
         return self.call("show", _drop_none({"title": title, "body": body, "room": room, "session_room": session_room}))
 
-    def pair_approve(self, code: str) -> dict:
-        return self.call("pair_approve", {"code": code})
+    def pair_approve(self, code: str, room: str | None = None) -> dict:
+        return self.call("pair_approve", _drop_none({"code": code, "room": room}))
+
+    def pair_deny(self, code: str) -> dict:
+        return self.call("pair_deny", {"code": code})
+
+    def assign(self, device_id: str, room: str) -> dict:
+        return self.call("assign", {"device_id": device_id, "room": room})
+
+    def mode(self, mode: str | None = None) -> dict:
+        return self.call("mode", _drop_none({"mode": mode}))
+
+    def desk_state(self, qr: bool = False) -> dict:
+        return self.call("desk_state", {"qr": qr})
 
     def devices(self) -> dict:
         return self.call("devices")

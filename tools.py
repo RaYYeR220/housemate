@@ -310,6 +310,12 @@ def register_tools(ctx) -> None:
     from .commands import register_surface
 
     register_surface(ctx)
+    try:  # the Desktop Rooms page's RPC methods (Hermes builds with ctx.register_rpc)
+        from .desktop_api import register_desktop
+
+        register_desktop(ctx)
+    except Exception:
+        log.warning("housemate: registering the Rooms page methods failed", exc_info=True)
     remember_dispatch(ctx)
     manifest = getattr(ctx, "manifest", None)
     if manifest is not None:
