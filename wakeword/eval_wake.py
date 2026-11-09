@@ -237,7 +237,7 @@ def main() -> None:
     for d in a.nearmiss:
         mf = Path(d).parent / "manifest.json"
         if mf.exists():
-            man.update({Path(m["file"]).name: m["text"] for m in json.loads(mf.read_text())})
+            man.update({Path(m["file"]).name: m.get("text", "") for m in json.loads(mf.read_text()) if "text" in m})
     for c in N:
         nm_by_text[man.get(Path(c["file"]).name, Path(c["file"]).stem)].append(round(c["max"], 4))
 
