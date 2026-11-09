@@ -81,6 +81,7 @@ class WakeArbiter:
         self._winners: deque[WakeWinner] = deque(maxlen=max_pending)
         self._last_losers: list[str] = []
         self._playing: dict[str, str] = {}  # device id -> earshot key
+        self._talking: dict[str, str] = {}  # device id -> earshot key, while its talk button is held
         self._decide_cbs: list[Callable[[WakeWinner], None]] = []
 
     def on_decide(self, cb: Callable[[WakeWinner], None]) -> None:
@@ -188,8 +189,26 @@ class WakeArbiter:
         with self._lock:
             return key in self._playing.values()
 
+    # --- held talk buttons ----------------------------------------------------------------
+
+    def set_talking(self, device_id: str, room: str | None, group: str | None, on: bool) -> None:
+        """The device's talk button is held (``on``) or let go."""
+        with self._lock:
+            if on:
+                self._talking[device_id] = earshot_key(room, group)
+            else:
+                self._talking.pop(device_id, None)
+
+    def talking_elsewhere(self, device_id: str, room: str | None, group: str | None) -> bool:
+        """Does another device in this earshot group hold its talk button? Then what is said now is
+        for that device: the others in earshot hear it too, but it is not theirs to answer."""
+        key = earshot_key(room, group)
+        with self._lock:
+            return any(k == key and dev != device_id for dev, k in self._talking.items())
+
     def forget(self, device_id: str) -> None:
-        """The device went away: drop its playback flag and any pending outcome."""
+        """The device went away: drop its playback and talk flags and any pending outcome."""
         with self._lock:
             self._playing.pop(device_id, None)
+            self._talking.pop(device_id, None)
             self._outcomes.pop(device_id, None)

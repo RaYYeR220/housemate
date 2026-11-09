@@ -254,14 +254,17 @@ class DeviceListener:
     def _command(self, name: str, arg: Any) -> None:
         if name == "room":
             self.room, self.group = arg
+            room, group = self._earshot()
             if self._playing_self:  # move the playback flag to the new earshot group
-                room, group = self._earshot()
                 self.arbiter.set_playing(self.device_id, room, group, True)
+            if self._state in (_PTT, _PTT_FULL):  # and the held talk button
+                self.arbiter.set_talking(self.device_id, room, group, True)
             return
         if name == "mute":
             if arg and not self._muted:
                 self._muted = True
                 self._to_idle()
+                self.arbiter.set_talking(self.device_id, *self._earshot(), False)
                 self.endpointer.reset()
                 reset = getattr(self.wake, "reset", None)
                 if callable(reset):
@@ -279,6 +282,7 @@ class DeviceListener:
                 self._window_end = self._n + max(1, round(arg / FRAME_S))
                 self.endpointer.restart()
         elif name == "ptt":
+            self.arbiter.set_talking(self.device_id, *self._earshot(), bool(arg))
             if arg:
                 self._to_idle()
                 self._state = _PTT
@@ -320,7 +324,11 @@ class DeviceListener:
             elif not self.endpointer.active and self._n - self._since > self._wake_listen:
                 self._to_idle()  # woke, but nothing was said
         elif st == _FOLLOWUP:
-            if self._group_playing():
+            if self.arbiter.talking_elsewhere(self.device_id, *self._earshot()):
+                # Someone holds another device's talk button in this earshot: the speech is for it.
+                self._to_idle()
+                self.endpointer.restart()
+            elif self._group_playing():
                 self.endpointer.restart()  # never capture the group's own playback
                 if self._n >= self._window_end:
                     self._to_idle()

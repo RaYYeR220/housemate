@@ -257,6 +257,27 @@ def test_two_devices_in_earshot_only_the_winner_answers():
     assert rig.kinds() == [("phone", "wake"), ("laptop", "wake")]
 
 
+def test_holding_talk_on_one_device_closes_follow_up_windows_in_its_earshot():
+    """Two windows on one PC hear one microphone (live: the office had just answered and was still
+    listening when the kitchen's talk button was held, so both rooms set a tea timer). Speech for
+    the device whose button is held is never a follow-up on the others in its earshot group."""
+    rig = Rig()
+    phone = rig.listener("phone", "kitchen", group="desk")
+    laptop = rig.listener("laptop", "office", group="desk")
+    tablet = rig.listener("tablet", "bedroom")  # another earshot: not affected
+    laptop.open_followup(6.0)
+    tablet.open_followup(6.0)
+    rig.feed({laptop: silence(10), tablet: silence(10)})
+    phone.set_ptt(True)
+    talk = speech(40)
+    rig.feed({phone: talk, laptop: talk + silence(40), tablet: talk + silence(40)})
+    phone.set_ptt(False)
+    assert sorted(rig.kinds()) == [("phone", "ptt"), ("tablet", "followup")]
+    # after the button is let go the laptop is idle: more speech needs the wake word
+    rig.feed({laptop: speech(30) + silence(40)})
+    assert sorted(rig.kinds()) == [("phone", "ptt"), ("tablet", "followup")]
+
+
 async def test_inference_runs_off_loop_and_callback_returns_to_loop():
     loop_thread = threading.get_ident()
     seen: list[tuple[str, int, int]] = []
