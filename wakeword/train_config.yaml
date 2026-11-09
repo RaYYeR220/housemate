@@ -62,6 +62,25 @@ extra_positives:
   noise_scale_ws: [0.8, 0.98]
   length_scales: [0.8, 1.0, 1.2]
 
+# Extra weight on the near-misses that still fired in run 3 ("hey, her mess" 0.98, "hey herman" 0.67,
+# "hey, herb" 0.58), voiced by unmixed Piper speakers (oww_train.py `extra_negatives`, prefix xn_).
+extra_negatives:
+  texts: ["hey, her mess.", "hey herman.", "hair mess.", "hey, hermit.", "hey, herb."]
+  n_train: 2500
+  n_test: 300
+  slerp_weights: [1.0]
+  noise_scales: [0.667, 0.98]
+  noise_scale_ws: [0.8, 0.98]
+  length_scales: [0.8, 1.0, 1.2]
+
+# Clips from a second TTS engine for accent coverage (oww_train.py `import_clips`): Microsoft Edge neural
+# voices of the TRAIN half of edge_voices.py (22 personas, 14 English locales), made with
+# `make_eval_corpus.py --split train`. The TEST half is never used here. Each training clip is copied
+# `copies` times so each copy gets its own augmentation; ~10 % of clips go to the validation folders.
+import_clips:
+  - {src: "/data/edge_train/positives", kind: positive, copies: 5, holdout_fraction: 0.1}
+  - {src: "/data/edge_train/negatives", kind: negative, copies: 5, holdout_fraction: 0.1}
+
 tts_batch_size: 100
 augmentation_batch_size: 16
 

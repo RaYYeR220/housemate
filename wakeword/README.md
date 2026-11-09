@@ -11,7 +11,10 @@ Any openWakeWord-format head plugs into the same pipeline.
 
 **Result: the trained head did not pass our bar, so it is not shipped.**
 - **The bar:** recall ≥ 90 % on held-out positives **and** ≤ 0.5 false accepts per hour, measured with Housemate's runtime.
-- **Best candidate after three runs:** 89.4 % recall at 0.34 FA/h (threshold 0.15), or 92.1 % at 0.60 FA/h (threshold 0.10).
+- **Best results after four runs:**
+  - run 3: 89.4 % recall at 0.34 FA/h (threshold 0.15) on the first held-out set;
+  - run 4: 77.6 % at 0.43 FA/h on a stricter held-out set whose voices are disjoint from the training voices.
+- **Where it falls short:** non-US accents.
 - **Consequence:** Housemate keeps openWakeWord's stock `hey_jarvis` as its default wake word. A head you train yourself can be dropped in as `wakeword/hey_hermes.onnx`, or set by path as `wake_model`.
 
 See [MODEL_CARD.md](MODEL_CARD.md) for the full evaluation, the failure modes and the licence. A head trained with this recipe is **CC BY-NC-SA 4.0 (non-commercial)**, inherited from the training features, unlike the MIT code in this repo.
@@ -28,10 +31,17 @@ The pipeline runs inside a CUDA container ([`Dockerfile`](Dockerfile)). In order
    - 25,000 clips come from `train.py`'s own call. Each of those is a 50/50 SLERP mix with one of the first few dozen speakers.
    - 30,000 more come from `oww_train.py extra_positives`. This uses the same `generate_samples()` but with unmixed speakers (`slerp_weights: [1.0]`, so all 904 voices) and punctuation variants ("hey, hermes.", "hey hermes!").
    - Without these extra clips, run 1 missed most non-US accents; see the model card.
+   - About 2,200 clips come from a second engine: Microsoft Edge neural voices, made with `make_eval_corpus.py --split train`.
+     - They use only the **TRAIN** half of a fixed voice split ([`edge_voices.py`](edge_voices.py): 22 of the 47 English voices, 14 locales).
+     - Each voice gets punctuation × rate × pitch variants.
+     - `oww_train.py import_clips` copies each clip 5× so every copy gets its own augmentation.
 2. **Adversarial negatives.**
    - Phrases chosen automatically by phoneme overlap with the target (CMUdict).
    - Curated near-misses from the config, such as "hey herman", "hair mess", "hey there miss", "hermes" on its own and "hey her mess".
    - [`oww_train.py`](oww_train.py) repeats the curated list `custom_negative_repeat` times, so those phrases make up about 5 % of the negatives instead of 30 clips out of 25,000.
+   - Extra weight goes on the near-misses that still fired in evaluation ("hey, her mess", "hey herman", "hair mess", "hey, hermit", "hey, herb"):
+     - 2,800 more Piper clips (`extra_negatives`);
+     - the same phrases in the Edge TRAIN voices (`import_clips`, 5× each).
 3. **Augmentation.** EQ, distortion, pitch shift, band-stop filtering, coloured noise, background audio at -10 to 15 dB SNR, and room impulse responses (MIT IR survey). Then openWakeWord features are computed on the GPU.
    - The background audio is AudioSet, Free Music Archive, and LibriSpeech dev-clean read speech in 10 s chunks.
    - The read speech is our addition. It lifted recall with background speech from 59 % to 81 % at threshold 0.5.
@@ -41,7 +51,7 @@ The pipeline runs inside a CUDA container ([`Dockerfile`](Dockerfile)). In order
 
    It uses openWakeWord's `auto_train` schedule: three cycles, a rising negative weight, and checkpoint averaging selected on the ~11 h false-positive validation set.
 5. **Evaluation with our runtime, not the trainer's metrics.** [`eval_wake.py`](eval_wake.py) streams audio through `core/wake.py` in 80 ms chunks, as a satellite does. The material:
-   - held-out real-TTS positives from a different engine ([`make_eval_corpus.py`](make_eval_corpus.py): Microsoft Edge neural voices, 47 English voices across 14 locales);
+   - held-out TTS positives from the **TEST** half of the Edge voice split ([`make_eval_corpus.py`](make_eval_corpus.py) `--split test`: 25 voices across all 14 locales). No TEST voice is ever used in training;
    - near-miss phrases;
    - more than 10 h of LibriSpeech test speech plus unseen AudioSet/FMA music and noise.
 
@@ -55,7 +65,8 @@ The pipeline runs inside a CUDA container ([`Dockerfile`](Dockerfile)). In order
 | TensorFlow + onnx-tf for `.tflite` export | not installed | Housemate only uses the ONNX head |
 | `torch` from Colab | `torch==2.4.1` (CUDA 12.1) + `onnxruntime-gpu==1.19.2` | one cuDNN 9 for both, so feature extraction runs on the GPU |
 | `custom_negative_phrases` listed once | repeated via `custom_negative_repeat` | `train.py` voices the list in order, one clip per entry |
-| positives from `train.py` only | plus `extra_positives` (unmixed speakers, punctuation variants) | accent coverage; see above |
+| positives from `train.py` only | plus `extra_positives` (unmixed speakers, punctuation variants) and Edge TRAIN-voice clips (`import_clips`) | accent coverage; see above |
+| curated negatives only | plus `extra_negatives` and Edge near-misses | the phrases that still fired in evaluation |
 | AudioSet + FMA backgrounds | plus LibriSpeech dev-clean speech chunks (`prepare_data.py speechbg`) | wake word spoken over a TV/podcast; dev-clean speakers are disjoint from the test sets used for evaluation |
 | `--convert_to_tflite` default `"False"` (a truthy string) | patched to `is True` in the image | otherwise `train.py` always attempts the TFLite conversion and exits non-zero after saving the ONNX head |
 
@@ -85,12 +96,13 @@ $RUN python /recipe/prepare_data.py rirs audioset fma speechbg features librispe
 
 # 2. Piper clips -> augmentation + features -> training (writes $WORK/hey_hermes/hey_hermes.onnx)
 #    One call runs the stages in order; they can also be run one at a time.
+python wakeword/make_eval_corpus.py --split train --out $DATA/edge_train      # Edge TRAIN voices (host, edge-tts)
 $RUN python /recipe/oww_train.py --config /recipe/train_config.yaml \
-    extra_positives generate_clips augment_clips train_model
+    extra_positives extra_negatives import_clips generate_clips augment_clips train_model
 cp $WORK/hey_hermes/hey_hermes.onnx wakeword/hey_hermes.onnx   # only if it passes step 3
 
 # 3. held-out evaluation with the Housemate runtime (on the host)
-python wakeword/make_eval_corpus.py --out $WORK/../eval/edge
+python wakeword/make_eval_corpus.py --split test --out $WORK/../eval/edge   # Edge TEST voices only
 python wakeword/eval_wake.py --head wakeword/hey_hermes.onnx --models-dir <dir with melspectrogram.onnx + embedding_model.onnx> \
     --positives $WORK/../eval/edge/positives <your own recordings> --nearmiss $WORK/../eval/edge/nearmiss \
     --speech $DATA/eval/librispeech --music-noise $DATA/eval/audioset_16k $DATA/eval/fma_16k \
@@ -98,7 +110,7 @@ python wakeword/eval_wake.py --head wakeword/hey_hermes.onnx --models-dir <dir w
 ```
 
 Notes on the commands:
-- Every stage is resumable. `extra_positives` and `generate_clips` top up missing clips, and `augment_clips` skips features that already exist (pass `--overwrite` to recompute them).
+- Every stage is resumable. `extra_positives`, `extra_negatives`, `import_clips` and `generate_clips` top up missing clips, and `augment_clips` skips features that already exist (pass `--overwrite` to recompute them).
 - Expect about 25 min of clip generation, 40 min of augmentation and feature extraction, and 35 min of training on an RTX 4060.
 - `--models-dir` needs the two feature models. Housemate downloads them with SHA-256 pins into `<plugin data dir>/models/` on first start (`core/models.py`), or fetch them from the [openWakeWord v0.5.1 release](https://github.com/dscripka/openWakeWord/releases/tag/v0.5.1).
 
@@ -117,6 +129,6 @@ Notes on the commands:
 | Free Music Archive `fma_small` (160 clips) | background augmentation | os.unil.cloud.switch.ch/fma | per-track Creative Commons licences, some NC |
 | LibriSpeech dev-clean (400 × 10 s) | background speech augmentation | openslr.org/12 | CC BY 4.0; the recordings are public-domain LibriVox readings |
 | LibriSpeech test-clean + test-other | **evaluation only** | openslr.org/12 | CC BY 4.0; the recordings are public-domain LibriVox readings |
-| Microsoft Edge neural TTS clips | **evaluation only** | `edge-tts` | generated test audio, not redistributed |
+| Microsoft Edge neural TTS clips | training (TRAIN voices) and evaluation (TEST voices) | `edge-tts`, an unofficial client of the Edge browser's read-aloud service | generated audio, not redistributed. Microsoft publishes no explicit terms for training on this service's output; check this before any use beyond a non-commercial hobby model |
 
 A deterministic hash split keeps 15 % of the AudioSet and FMA clips out of training. They are used only as unseen music/noise in the false-accept evaluation.
