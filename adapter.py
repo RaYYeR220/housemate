@@ -84,9 +84,10 @@ MAX_REPROMPTS = 2
 INTERCOM_WINDOW_S = 8.0  # after a tap on another room: start talking within this, it plays there
 INTERCOM_TTL_S = INTERCOM_WINDOW_S + 17.0  # window + the longest utterance + endpointing
 TURN_LOG_SIZE = 100  # finished turns whose stage times the control API reports
-# A spoken approval or clarify answer is taken only from a clip that began this long after the last
-# sound any Housemate device played (and while none plays): never from our own audio.
-ECHO_TAIL_S = 1.0
+# A spoken approval or clarify answer is taken only from a clip whose speech began this long after
+# the last sound any Housemate device played (and while none plays): never from our own audio. The
+# device reports a stream as heard when its last buffer ends; this covers its output and mic latency.
+ECHO_TAIL_S = 0.5
 CHIME_S = 1.5  # a satellite chime, counted as playback (it is played on the device, not streamed)
 ANNOUNCED_TTL_S = 600.0  # what we announced this recently is never an approval answer
 
@@ -1230,13 +1231,16 @@ class HousemateAdapter(BasePlatformAdapter):
 
     def _heard_ourselves(self, utt: Any) -> bool:
         """Could this clip hold our own audio? True while any Housemate device plays (in any room:
-        earshot groups are a hint, not a guarantee) or when the clip began less than
-        ``ECHO_TAIL_S`` after the last sound one played."""
+        earshot groups are a hint, not a guarantee) or when its speech began less than
+        ``ECHO_TAIL_S`` after the last sound one played. The preroll before the speech may start
+        earlier: a person answering half a second after the question is still heard."""
         if self._playing:
             return True
-        started = float(getattr(utt, "started_at", 0.0) or 0.0)
+        began = getattr(utt, "speech_at", None)
+        if began is None:
+            began = getattr(utt, "started_at", 0.0)
         last = max(self._played_until.values(), default=float("-inf"))
-        return started < last + ECHO_TAIL_S
+        return float(began or 0.0) < last + ECHO_TAIL_S
 
     def _note_announced(self, text: str) -> None:
         """The announcer is about to say ``text`` (announcements, timer rings, deliveries)."""

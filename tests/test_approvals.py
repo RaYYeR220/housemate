@@ -191,6 +191,39 @@ async def test_answer_right_after_our_own_audio_is_not_an_answer(kit):
     assert kit.resolved == [(SESSION, "once", "req-1")]
 
 
+def clip_after_quiet(preroll_starts: float, speech_starts: float, seconds: float = 0.9):
+    """A follow-up clip: when its preroll and its first speech began, in seconds after the
+    question was heard."""
+    utt = utterance(seconds)
+    now = time.time()
+    utt.started_at = now + preroll_starts
+    utt.speech_at = now + speech_starts
+    utt.ended_at = utt.started_at + seconds
+    return utt
+
+
+async def test_prompt_answer_said_right_after_the_question_is_taken(kit):
+    """People answer about half a second after the question ends. The clip's preroll then starts
+    inside the echo tail, but the speech itself began after it: that is an answer."""
+    await ask_approval(kit)
+    await quiet(kit)
+    before = len(kit.events)
+    kit.adapter._on_utterance("dev-kitchen", clip_after_quiet(0.3, 0.6), "followup")
+    await kit.settle()
+    assert len(kit.events) == before + 1
+    assert kit.events[-1].source.chat_id == SIDE_CHAT
+
+
+async def test_speech_that_starts_inside_the_echo_tail_is_not_an_answer(kit):
+    await ask_approval(kit)
+    await quiet(kit)
+    before = len(kit.events)
+    kit.adapter._on_utterance("dev-kitchen", clip_after_quiet(-0.2, ECHO_TAIL_S - 0.2), "followup")
+    await kit.settle()
+    assert len(kit.events) == before
+    assert "req-1" in kit.adapter._prompts
+
+
 async def test_a_chime_counts_as_our_own_audio(kit):
     await ask_approval(kit)
     await quiet(kit)

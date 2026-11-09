@@ -52,6 +52,20 @@ def test_endpoint_after_700ms_silence():
     assert utt.ended_at == pytest.approx(utt.started_at + 75 * 0.02)
 
 
+def test_speech_at_marks_the_first_speech_frame_after_the_preroll():
+    vad = ScriptedVad([0.0] * 20 + [0.9] * 50 + [0.1] * 40)
+    ep = Endpointer(vad, clock=lambda: 100.0)
+    ((_, utt),) = run(ep, 110)
+    assert utt.speech_at == pytest.approx(utt.started_at + 15 * 0.02)  # 300 ms of preroll
+
+
+def test_speech_at_without_preroll_is_the_start():
+    vad = ScriptedVad([0.9] * 50 + [0.1] * 40)
+    ep = Endpointer(vad, clock=lambda: 100.0)
+    ((_, utt),) = run(ep, 90)
+    assert utt.speech_at == pytest.approx(utt.started_at)
+
+
 def test_too_short_speech_discarded():
     vad = ScriptedVad([0.0] * 10 + [0.9] * 12 + [0.0] * 60)  # 240 ms < 250 ms
     ep = Endpointer(vad)

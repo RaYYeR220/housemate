@@ -31,6 +31,7 @@ class Utterance:
     started_at: float  # wall-clock time of the first sample in ``pcm``
     ended_at: float  # wall-clock time of the last sample in ``pcm``
     truncated: bool  # hit max_utterance_s
+    speech_at: float | None = None  # wall-clock time of the first speech frame (after the preroll)
 
     @property
     def duration_s(self) -> float:
@@ -85,6 +86,7 @@ class Endpointer:
         self._speech = 0  # speech frames in the segment
         self._silence = 0  # consecutive non-speech frames
         self._last_speech = 0  # segment length right after the newest speech frame
+        self._preroll = 0  # preroll frames at the start of the segment
 
     def restart(self, *, keep_preroll: bool = True, skip_ms: int = 0) -> None:
         """Drop the current segment (and any post-truncation wait); keep the VAD state.
@@ -137,6 +139,7 @@ class Endpointer:
                 self._pre.append(frame)
                 return None
             self._seg = list(self._pre)
+            self._preroll = len(self._seg)
             self._pre.clear()
 
         seg = self._seg
@@ -175,4 +178,5 @@ class Endpointer:
             started_at=started,
             ended_at=started + len(pcm) / FRAME_BYTES * FRAME_S,
             truncated=truncated,
+            speech_at=started + self._preroll * FRAME_S,
         )
