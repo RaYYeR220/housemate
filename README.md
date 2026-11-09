@@ -248,7 +248,7 @@ hermes housemate bench [wake latency tests]  measure; writes results/*.json
 - **Hermes 0.23.0 has no plugin RPC.** There the Rooms page uses the plugin's REST routes; on newer builds it uses plugin RPC. The RPC path is covered by unit tests only.
 - **Tested in the Webapp.** The Rooms page was tested in the Hermes 0.23.0 Webapp (Desktop in a browser tab). The native Desktop app has not been tested.
 - **Tested on Windows 11 with Chrome**, for both the hub and the satellites. CI runs the tests and the catalog validation on Linux. macOS and Safari on iPhone are untested.
-<!-- TODO-phone: real-phone result (Samsung Galaxy A52: Android and Chrome versions; wake word from across the room; screen stays on; certificate flow) -->
+- **Tested on a real old phone, over USB on my network.** A Samsung Galaxy A52 (Android 14, Chrome 156) paired, heard the wake word from about half a metre to a metre away, answered in its own room, rang timers and showed approval cards. My home router isolates Wi-Fi clients, so the phone could not reach the PC over Wi-Fi; it ran through `adb reverse tcp:8742 tcp:8742` and `https://localhost:8742` instead, which works with any Android phone on a USB cable. On a network without client isolation the phone opens the LAN address from the QR code.
 - **No voice recognition.** Anyone in earshot of a paired speaker can talk to your agent, with all the tools it has. Risky commands still need an approval. Use `HOUSEMATE_ALLOWED_DEVICES`, the mic mute on each speaker, or keep speakers out of rooms where that matters.
 - **One question at a time per household.** A room that speaks while another is being answered waits its turn.
 - **Spoken approve, deny, stop and skip are English words.** Everything else follows your STT and model.
