@@ -458,6 +458,23 @@ async def test_wake_word_stops_a_ring(kit):
     assert kit.adapter.book.for_device("dev-kitchen") is None  # the next utterance is a normal question
 
 
+async def test_wake_question_asked_as_a_timer_starts_ringing_is_a_question(kit):
+    """The wake word won just before the timer rang (live: "Hey Jarvis, set a pasta timer…" said as
+    the tea timer went off). The question that follows is still sent to Hermes, never swallowed
+    as a "stop" answer, and it silences the ring like any wake word."""
+    kit.adapter._on_wake("dev-kitchen")
+    kit.timers.ringing.add("kitchen")
+    await kit.adapter._on_timer_ring(type("T", (), {"room": "kitchen"})())
+    await kit.settle()
+    before = len(kit.events)
+    kit.adapter._on_utterance("dev-kitchen", utterance(), "wake")
+    await kit.settle()
+    assert kit.timers.stopped == ["kitchen"]
+    assert kit.adapter.book.for_device("dev-kitchen") is None
+    assert len(kit.events) == before + 1
+    assert kit.events[-1].source.chat_id == "household"
+
+
 async def test_tap_stop_timer(kit):
     kit.timers.ringing.add("kitchen")
     await kit.adapter._on_control("dev-kitchen", {"type": "ui.action", "kind": "stop_timer", "id": ""})

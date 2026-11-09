@@ -620,6 +620,12 @@ class HousemateAdapter(BasePlatformAdapter):
             self._spawn(self._deliver_intercom(device_id, room, intercom[0], bytes(utt.pcm)))
             return
         pending = self.book.for_device(device_id)
+        if pending is not None and pending.kind == "stop" and kind == "wake":
+            # The wake word won before this ring began (a wake during a ring stops it at once): what
+            # follows is a question, and like any wake word it silences the ring.
+            self._stop_ring(room)
+            self._barge_in(device_id)
+            pending = None
         if pending is not None and pending.kind in ("approval", "clarify") and self._heard_ourselves(utt):
             # Our own audio (a reply, a ring, an announcement in any room) may be in this clip: it
             # never answers a prompt. A ringing timer's "stop" still may.
