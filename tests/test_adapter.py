@@ -501,6 +501,10 @@ async def test_connect_stops_the_hub_when_a_later_step_fails(tmp_path, monkeypat
         raise OSError("disk full")
 
     monkeypatch.setattr(adapter, "_wire", broken_wire)
+    fatal = []  # recorded here: the shim and the real base class keep it in different attributes
+    monkeypatch.setattr(adapter, "_set_fatal_error",
+                        lambda code, message, *, retryable: fatal.append((code, message, retryable)))
     assert await adapter.connect() is False
     assert stopped == [True]
-    assert adapter.fatal[0] == "hub_failed" and "disk full" in adapter.fatal[1] and adapter.fatal[2] is True
+    assert len(fatal) == 1
+    assert fatal[0][0] == "hub_failed" and "disk full" in fatal[0][1] and fatal[0][2] is True
