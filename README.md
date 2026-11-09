@@ -33,12 +33,14 @@ hermes plugins enable housemate         # installs aiohttp, numpy, onnxruntime, 
 hermes config set platforms.housemate.enabled true
 hermes config set webapp.enabled true   # if the Webapp is not on yet
 hermes gateway restart
-hermes webapp                           # then open Rooms in the sidebar
+hermes webapp                           # sign in with the one-use link it prints
 ```
+
+In the Webapp open **Capabilities → Plugins**, click **Housemate** and switch **Desktop** on (Hermes ships a plugin's Desktop page off). **Rooms** then appears in the sidebar.
 
 1. Scan the QR code on the Rooms page with the old phone (it must be on the same Wi-Fi). `hermes housemate cert` prints the same address and QR code in a terminal.
 2. The phone's browser warns about the self-signed certificate. Check that the fingerprint matches the one on the Rooms page, then continue.
-3. Name the speaker, pick its room, and approve its six-digit code on the Rooms page (or run `hermes housemate pair 123456`).
+3. Name the speaker and pick its room. It shows a six-digit code: press **Approve** next to it on the Rooms page and type the code (or run `hermes housemate pair 123456`).
 4. Press **Tap to start**, put the phone down and say **"Hey Jarvis, set a pasta timer for nine minutes."**
 
 The default rooms are Kitchen and Office. Add more from a speaker's room picker or with `hermes housemate rooms add Living Room`.
@@ -47,8 +49,8 @@ The default rooms are Kitchen and Office. Add more from a speaker's room picker 
 
 Two browser windows on one PC make two rooms.
 
-1. Follow the quick start up to `hermes webapp`.
-2. Both windows will hear the same microphone, so put both rooms in one earshot group. The hub then picks one device per wake word and does not take follow-up questions while either window is speaking:
+1. Follow the quick start up to `hermes webapp` and switch the Housemate Desktop page on.
+2. Both windows will hear the same microphone, so put both rooms in one earshot group. The hub then picks one device per wake word, and takes no follow-up questions while either window is speaking or while the other window's talk button is held:
 
    ```bash
    hermes housemate rooms group Kitchen desk
@@ -56,7 +58,7 @@ Two browser windows on one PC make two rooms.
    ```
 
 3. Open `https://localhost:8742` in one Chrome window and `https://127.0.0.1:8742` in a second window beside it. The two addresses make two separate devices; two tabs at one address would share a single device identity. Accept the certificate warning in each.
-4. Name them, put one in **Kitchen** and the other in **Office**, approve both codes on the Rooms page, and press **Tap to start** in each. (A window that was already open picks up a new earshot group when you reload it.)
+4. Name them, put one in **Kitchen** and the other in **Office**, approve both on the Rooms page by typing the code each window shows, and press **Tap to start** in each. (A window that was already open picks up a new earshot group when you reload it.)
 5. Say "Hey Jarvis, what's two plus two?". One window answers, and the Rooms page marks the other one *deferred*. To talk to one window in particular, **hold its talk button** and speak; no wake word is needed.
 6. Then try a few things, holding the talk button of the window named:
    - Kitchen: "Set a tea timer for twenty seconds." Office: "How long is left on the tea?" Twenty seconds later the Kitchen window rings; say "stop".
@@ -100,7 +102,7 @@ Every number here is copied from `results/*.json` by `scripts/render_numbers.py`
 | Wake word recall, clean | <!-- num:wake_recall -->100 %<!-- /num --> of <!-- num:wake_recall_n -->58<!-- /num --> clips |
 | Wake word recall with speech 10 dB lower in the background | <!-- num:wake_recall_noisy -->95 %<!-- /num --> |
 | False wakes | <!-- num:wake_fa_per_hour -->0.11<!-- /num --> per hour (<!-- num:wake_false_accepts -->1<!-- /num --> in <!-- num:wake_negative_hours -->9.2<!-- /num --> h of audiobook speech) |
-| Tests | <!-- num:tests_passed -->458<!-- /num --> passing on Hermes <!-- num:hermes_version -->0.23.0<!-- /num --> |
+| Tests | <!-- num:tests_passed -->513<!-- /num --> passing on Hermes <!-- num:hermes_version -->0.23.0<!-- /num --> |
 
 - **Latency** runs from the last frame of speech (found by Silero VAD in the clip, which is sent in real time like a satellite) to the first frame of reply audio arriving at the satellite, on the same PC as the hub, with one-word answers.
 - **Machine:** Ryzen 5 5600X, RTX 4060 8 GB, Windows 11.

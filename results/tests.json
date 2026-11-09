@@ -1,6 +1,6 @@
 {
  "environment": {
-  "date": "2026-11-08T23:16:36+00:00",
+  "date": "2026-11-09T01:34:56+00:00",
   "hermes_version": "0.23.0",
   "python": "3.14.3",
   "settings": {
@@ -44,23 +44,23 @@
    "python": "3.14.3",
    "real_hermes": true,
    "command": "pytest -q -m 'not slow'",
-   "passed": 458,
+   "passed": 513,
    "failed": 0,
    "skipped": 0,
    "deselected": 4,
    "errors": 0,
-   "summary": "458 passed, 4 deselected in 53.33s"
+   "summary": "513 passed, 4 deselected in 41.38s"
   },
   {
    "python": "3.11.1",
    "real_hermes": false,
    "command": "pytest -q -m 'not slow'",
-   "passed": 450,
+   "passed": 505,
    "failed": 0,
    "skipped": 8,
    "deselected": 4,
    "errors": 0,
-   "summary": "450 passed, 8 skipped, 4 deselected in 25.63s"
+   "summary": "505 passed, 8 skipped, 4 deselected in 27.28s"
   }
  ]
 }

@@ -4,7 +4,7 @@ You need Hermes 0.23.0 or newer, Chrome and a microphone (headphones help). Herm
 
 Every claim below is also listed in [CLAIMS.md](CLAIMS.md) with the file or script that backs it. Screenshots are in [docs/screens/](docs/screens/).
 
-## 0. Install (about a minute, plus the dependency install)
+## 0. Install (a few minutes)
 
 ```bash
 hermes plugins install housemate
@@ -14,12 +14,16 @@ hermes config set webapp.enabled true
 hermes housemate rooms group Kitchen desk    # both windows hear one microphone:
 hermes housemate rooms group Office desk     # one earshot group lets the hub pick one
 hermes gateway restart
-hermes webapp                                # open Rooms in the sidebar
+hermes webapp                                # prints a one-use sign-in link
 ```
+
+The dependency install takes a minute or two, and the first `hermes webapp` may build the Webapp first (about five minutes on our test machine).
+
+Hermes ships a plugin's Desktop page switched off. In the Webapp open **Capabilities → Plugins**, click **Housemate** and switch **Desktop** on. **Rooms** then appears in the sidebar.
 
 ## 1. Two rooms on one PC
 
-Open `https://localhost:8742` in one Chrome window and `https://127.0.0.1:8742` in another, side by side. Accept the certificate warning in each (the fingerprint is on the Rooms page). Name one "Kitchen tab" in **Kitchen** and the other "Office tab" in **Office**, approve both six-digit codes on the Rooms page, and press **Tap to start** in each.
+Open `https://localhost:8742` in one Chrome window and `https://127.0.0.1:8742` in another, side by side. Accept the certificate warning in each (the fingerprint is on the Rooms page). Name one "Kitchen tab" in **Kitchen** and the other "Office tab" in **Office**. Each window shows a six-digit code: on the Rooms page press **Approve** next to each request and type that window's code. Then press **Tap to start** in each.
 
 **Look for:** both devices appear on the Rooms page in their rooms, with overlapping earshot circles and the label "Within earshot · Kitchen + Office".
 
@@ -27,7 +31,7 @@ Open `https://localhost:8742` in one Chrome window and `https://127.0.0.1:8742` 
 
 Say **"Hey Jarvis, what's two plus two?"**
 
-**Look for:** both windows heard it, exactly one answers out loud ("Four."), and the Rooms page marks one device *answered* and the other *deferred*. Only the answering window shows the caption. The hub settles this within 400 ms ([core/arbiter.py](core/arbiter.py), [tests/test_arbiter.py](tests/test_arbiter.py)).
+**Look for:** both windows heard it, exactly one answers out loud ("Four."), and for about three seconds the Rooms page marks one device *answered* and the other *deferred*. Only the answering window shows the caption. Both windows hear the same microphone at the same level here, so either one may win. The hub settles this within 400 ms ([core/arbiter.py](core/arbiter.py), [tests/test_arbiter.py](tests/test_arbiter.py)).
 
 From here on, **hold the talk button** in a window to talk to that room. No wake word is needed.
 
@@ -48,10 +52,10 @@ Twenty seconds after step 3, the **Kitchen** window rings: a chime, "Your tea ti
 
 Run `mkdir ~/housemate-demo` (on Windows, `mkdir %USERPROFILE%\housemate-demo`), then in the Kitchen: "Delete the housemate-demo folder in my home directory."
 
-**Look for:** with Hermes's command approvals on, the Kitchen window shows a card with the exact command and Approve / Deny, and reads the question out loud. Then:
+**Look for:** with Hermes's command approvals on, the Kitchen window shows a card with the exact command and Approve / Deny, and reads the question out loud. Answer after the question ends (no talk button needed for the answer):
 
 - Say **"deny"**: Hermes reports it was denied and the folder is still there.
-- Ask again and say **"yes, but what does it do?"**: that is not a clean answer, so you are asked again.
+- Ask again (hold to talk) and say **"yes, but what does it do?"**: that is not a clean answer, so you are asked again.
 - Say **"approve"**: the folder is gone.
 - Say nothing: Hermes's approval timeout denies it.
 
@@ -78,7 +82,7 @@ hermes housemate bench wake --max-hours 0.5 --no-generate --out ./bench-out
 
 ## 8. Tests and validation
 
-The tests are in [tests/](tests/): <!-- num:tests_passed -->458<!-- /num --> pass against the real Hermes <!-- num:hermes_version -->0.23.0<!-- /num --> ([results/tests.json](results/tests.json)). From a checkout:
+The tests are in [tests/](tests/): <!-- num:tests_passed -->513<!-- /num --> pass against the real Hermes <!-- num:hermes_version -->0.23.0<!-- /num --> ([results/tests.json](results/tests.json)). From a checkout:
 
 ```bash
 python -m pytest -m "not slow"
