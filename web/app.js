@@ -330,6 +330,12 @@ function showPrompt() {
       buttons: [{ label: 'Approve', value: 'approve', primary: true }, { label: 'Deny', value: 'deny' }],
       foot: 'Say "approve" or "deny". No answer means deny.',
     };
+  } else if (p.kind === 'resume') { // Hermes paused this conversation after a restart
+    view = {
+      title: p.title || 'Conversation paused', details: [{ text: String(p.detail || p.text || '') }],
+      buttons: [{ label: 'Continue', value: 'continue', primary: true }],
+      foot: 'Say "continue", or tap it.',
+    };
   } else {
     const choices = (Array.isArray(p.choices) ? p.choices : []).slice(0, 8).map((c) => ({ label: String(c), value: String(c) }));
     view = { title: String(p.text || 'A question'), details: [], buttons: choices, foot: choices.length ? 'Say your choice, or tap it.' : 'Say your answer.' };

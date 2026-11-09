@@ -15,7 +15,9 @@ conversation by default) and queues a second room that speaks while a turn is ru
 Outbound, Hermes's streaming TTS is paced to the device that asked (``Playout``), the reply text
 becomes a caption in that room, and a short follow-up window opens when the device reports that
 playback finished. Approvals and clarify prompts are spoken and shown as cards; a spoken answer goes
-through the public side-chat route in ``core.answers``.
+through the public side-chat route in ``core.answers``. A conversation Hermes paused because a gateway
+restart lost one of its turns gets the same treatment: a spoken "continue" (or a tap) sends Hermes's
+own ``/discard`` command from that device.
 """
 
 from __future__ import annotations
@@ -28,7 +30,7 @@ import re
 import socket
 import time
 import uuid
-from collections import deque
+from collections import OrderedDict, deque
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -50,7 +52,7 @@ from .core.arbiter import WakeArbiter
 from .core.audio import pcm_to_wav
 from .core.config import HousemateConfig
 from .core.desk import DeskFeed, DeskLog, desk_state, persist_mode
-from .core.intents import is_skip, is_stop, normalize, parse_choice, parse_yes_no, spoken_label
+from .core.intents import is_continue, is_skip, is_stop, normalize, parse_choice, parse_yes_no, spoken_label
 from .core.playout import PcmRealigner, Playout
 from .core.protocol import SAMPLE_RATE as MIC_RATE
 from .core.router import HOUSEHOLD_CHAT, SessionRouter
@@ -67,9 +69,26 @@ SIDE_CHAT = answers.SIDE_CHAT
 # Gateway notices that make no sense out loud on a kitchen speaker.
 _SWALLOWED_PREFIXES = ("\U0001F4EC", "♻")  # "📬 No home channel is set…", "♻️ Gateway restarted…"
 _TRANSCRIPT_PREFIX = "\U0001F399"  # "🎙️ "<transcript>"": the STT echo
-# Housekeeping notices: caption only. 💾 self-improvement, ⚡ interrupt, 💡 tip, ⏳/⌛ waits, 🔄 retry.
-_STATUS_PREFIXES = ("\U0001F4BE", "⚡", "\U0001F4A1", "⏳", "⌛", "\U0001F504")
+# Housekeeping notices: caption only. 💾 self-improvement, ⚡ interrupt, 💡 tip, ⏳/⌛ waits, 🔄 retry,
+# 🗑️ "/discard" done.
+_STATUS_PREFIXES = ("\U0001F4BE", "⚡", "\U0001F4A1", "⏳", "⌛", "\U0001F504", "\U0001F5D1")
 _QUOTES = "\"'“”‘’ ️"
+# "⏸️ This conversation is paused: …". A person's turn that was running when the gateway died (a
+# kill or a crash) is fenced on the next start and Hermes pauses that conversation
+# until the person sends /discard in the chat (Hermes 0.23 GW-10); it says so once, then admits later
+# messages silently. Nobody can type /discard to a speaker: the adapter asks for a spoken "continue".
+_PAUSED_PREFIX = "⏸"
+_LOST_TURN_COMMAND = "/discard"
+
+HOLD_TITLE = "Conversation paused"
+HOLD_SPOKEN = ("Hermes restarted before it finished an earlier request, so this conversation is paused. "
+               "Say continue, and I'll answer you. The unfinished request won't be run again.")
+HOLD_DETAIL = ("Hermes restarted before it finished an earlier request. Continue answers your question; "
+               "the unfinished request is not run again.")
+HOLD_AGAIN = "This conversation is still paused. Say continue, and I'll answer that next."
+HOLD_REPROMPT = "Sorry, I didn't catch that. Say continue, or tap Continue."
+PAUSED_PLAIN = "This conversation is paused and can't be answered here. Whoever runs Hermes needs to resume it."
+HOLD_ANSWER_TTL_S = 300.0  # one clip's round trip through the side chat
 
 CAPTION_TTL_S = 15 * 60
 CAPTION_KEEP = 5
@@ -91,6 +110,15 @@ TURN_LOG_SIZE = 100  # finished turns whose stage times the control API reports
 ECHO_TAIL_S = 0.3
 CHIME_S = 1.5  # a satellite chime, counted as playback (it is played on the device, not streamed)
 ANNOUNCED_TTL_S = 600.0  # what we announced this recently is never an approval answer
+
+
+def _paused_notice(text: str) -> bool:
+    return str(text or "").lstrip().startswith(_PAUSED_PREFIX)
+
+
+def _lost_turn_notice(text: str) -> bool:
+    """Hermes's notice for a conversation paused on a turn lost in a restart (lifted by /discard)."""
+    return _paused_notice(text) and _LOST_TURN_COMMAND in str(text)
 
 
 def wake_phrase(model: str) -> str:
@@ -145,7 +173,7 @@ class _Playing:
 
 @dataclass
 class _Prompt:
-    kind: str  # approval | clarify
+    kind: str  # approval | clarify | resume (a conversation Hermes paused after a restart)
     id: str  # card id: the approval request id or the clarify id
     chat_id: str
     session_key: str
@@ -164,6 +192,7 @@ class _Prompt:
     presented: bool = False  # shown (and spoken, armed): the first open prompt of its room
     shown_to: set[str] = field(default_factory=set)  # devices that got the card: only they may tap
     turn_id: str | None = None  # message id of the turn that asked (retired when Hermes is done with it)
+    say_on_present: bool = True  # False once: Hermes's own voice already said it
 
 
 class _ReplyHandle(StreamingTTSHandle):
@@ -248,6 +277,7 @@ class HousemateAdapter(BasePlatformAdapter):
         self._announced: deque[tuple[float, str]] = deque(maxlen=32)  # (monotonic, normalised text)
         self._captions: dict[str, deque] = {}
         self._prompts: dict[str, _Prompt] = {}
+        self._discards: OrderedDict[str, str | None] = OrderedDict()  # our /discard message ids -> room
         self._idle_timers: dict[str, asyncio.TimerHandle] = {}
         self._intercom: dict[str, tuple[str, float]] = {}  # device -> (target room, until): next utterance plays there
         self._states: dict[str, str] = {}  # last state asked of each device
@@ -577,6 +607,16 @@ class HousemateAdapter(BasePlatformAdapter):
     def _should_auto_tts_for_chat(self, chat_id: str) -> bool:
         return self.cfg.speak_replies and chat_id != SIDE_CHAT
 
+    def prepare_tts_text(self, text: str) -> str:
+        """What Hermes's voice says for a reply: a pause notice in plain words, never "send slash
+        discard" (the card and the answer to it are set up when the text itself arrives)."""
+        if _lost_turn_notice(text):
+            return HOLD_SPOKEN
+        if _paused_notice(text):
+            return PAUSED_PLAIN
+        base = getattr(super(), "prepare_tts_text", None)
+        return base(text) if base is not None else str(text or "")
+
     # ======================================================================== inbound audio
 
     def _on_audio(self, device_id: str, frame: bytes) -> None:
@@ -619,7 +659,7 @@ class HousemateAdapter(BasePlatformAdapter):
             self._set_state(device_id, "thinking")
             self._spawn(self._deliver_intercom(device_id, room, intercom[0], bytes(utt.pcm)))
             return
-        pending = self.book.for_device(device_id)
+        pending = self.book.for_device(device_id, kinds=("approval", "clarify", "stop"))
         if pending is not None and pending.kind == "stop" and kind == "wake":
             # The wake word won before this ring began (a wake during a ring stops it at once): what
             # follows is a question, and like any wake word it silences the ring.
@@ -646,6 +686,15 @@ class HousemateAdapter(BasePlatformAdapter):
         self._timings[item.message_id] = {"endpoint": item.endpoint_at, "captured": captured}
         self._timing_meta[item.message_id] = (room, kind)
         chat_id = self.router.chat_id_for(room)
+        hold = self._hold_for(chat_id)
+        if hold is not None:
+            self._on_held_utterance(hold, device_id, room, utt, item)
+            return
+        self._submit(chat_id, item)
+
+    def _submit(self, chat_id: str, item: _Utterance) -> None:
+        """Hand a question to Hermes now, or queue it while the chat has a turn running."""
+        room, device_id = item.room, item.device_id
         self._set_state(device_id, "thinking")
         if self.router.household_busy(chat_id):
             self.router.enqueue(item, chat_id)
@@ -761,11 +810,14 @@ class HousemateAdapter(BasePlatformAdapter):
         if chat_id and message_id and chat_id != SIDE_CHAT:
             # Hermes is done with this turn, so every prompt it asked is settled, even one answered
             # on Desktop or cancelled by /stop: clear those cards so none blocks the room's next one.
-            stale = [p for p in self._prompts.values() if p.turn_id == message_id]
+            stale = [p for p in self._prompts.values() if p.turn_id == message_id and p.kind != "resume"]
             for prompt in stale:
                 self._prompts.pop(prompt.id, None)
             for prompt in stale:
                 self._retire_prompt(prompt, "")
+            hold = self._hold_for(chat_id)
+            if hold is not None and hold.turn_id == message_id:
+                return  # Hermes paused the chat on this question: it runs once someone says continue
             turn = self.router.active_turn(chat_id)
             if turn is not None and turn.message_id == message_id:
                 if turn.device_id and turn.device_id not in self._playing:
@@ -796,6 +848,173 @@ class HousemateAdapter(BasePlatformAdapter):
         """The chat's turn waits on the user (an open approval or clarify prompt) or its question
         waits for Hermes to go idle: the safety timeout must not hand the next question over."""
         return chat_id in self._dispatching or any(p.chat_id == chat_id for p in self._prompts.values())
+
+    # ======================================================================== paused after a restart
+
+    def _hold_for(self, chat_id: str) -> _Prompt | None:
+        """The "say continue" prompt of a conversation Hermes paused on a turn lost in a restart."""
+        return next((p for p in self._prompts.values() if p.kind == "resume" and p.chat_id == chat_id), None)
+
+    def _holds_device(self, device_id: str) -> bool:
+        return any(p.kind == "resume" and p.device_id == device_id for p in self._prompts.values())
+
+    async def _hold_chat(self, chat_id: str, reply_to: Optional[str]) -> None:
+        """Hermes answered a question with the lost-turn pause notice (the question is saved behind
+        the lost turn). Keep that question as the chat's running turn, show a Continue card in its
+        room and ask for a spoken "continue"; nothing is discarded until someone says or taps it."""
+        turn = self.router.turn_for(reply_to)
+        if turn is None or turn.chat_id != chat_id:
+            turn = self.router.active_turn(chat_id) or self.router.latest_turn(chat_id)
+        room = turn.room if turn is not None else self._chat_room(chat_id)
+        spoken = bool(turn is not None and turn.audio)  # Hermes's voice already said it (prepare_tts_text)
+        if turn is not None:
+            turn.audio = False  # the real answer, after "continue", is still to be spoken
+            if self.router.active_turn(chat_id) is None:
+                self.router.begin_turn(chat_id, turn.room, turn.message_id, turn.device_id)
+        log.warning("housemate: Hermes paused the %s conversation (a turn was lost in a gateway restart); "
+                    "asking %s to say continue", chat_id, room or "the next room that speaks")
+        hold = self._hold_for(chat_id)
+        if hold is not None:  # the same pause told again (e.g. after another restart)
+            hold.turn_id = turn.message_id if turn is not None else hold.turn_id
+            if room:
+                self._retarget_hold(hold, self._reply_device(chat_id, reply_to), room, speak=not spoken)
+            return
+        hold = _Prompt("resume", f"resume-{uuid.uuid4().hex[:12]}", chat_id, "", room,
+                       self._reply_device(chat_id, reply_to), HOLD_SPOKEN, ["Continue"], title=HOLD_TITLE,
+                       detail=HOLD_DETAIL, spoken=HOLD_SPOKEN, turn_id=turn.message_id if turn is not None else None,
+                       say_on_present=not spoken)
+        self._prompts[hold.id] = hold  # held even with nobody online: the next speaker gets the card
+        if room and self._room_head(room) is hold and not await self._present(hold):
+            hold.presented = False
+            log.warning("housemate: no device online in %s for the paused conversation; the next one "
+                        "that speaks gets the card", room)
+
+    def _retarget_hold(self, hold: _Prompt, device_id: str | None, room: str, *, speak: bool) -> None:
+        """Show the pause card where someone just spoke (household mode: maybe another room)."""
+        if hold.presented and hold.room == room:
+            if device_id is not None:
+                hold.device_id = device_id
+            if speak:
+                self._spawn(self._ask(hold, hold.spoken))
+            return
+        if hold.presented and hold.room:
+            self._spawn(self._clear_prompt(replace(hold), ""))  # off the old room's screens
+        hold.room, hold.device_id = room, device_id
+        hold.shown_to, hold.presented, hold.say_on_present = set(), False, speak
+        self._spawn(self._present(hold))
+
+    def _on_held_utterance(self, hold: _Prompt, device_id: str, room: str, utt: Any, item: _Utterance) -> None:
+        """Someone spoke while their conversation is paused. "Continue" lifts the pause; anything
+        else is kept as a question for afterwards (Hermes would only save it silently)."""
+        if not self._device_allowed(device_id):
+            log.info("housemate: %s spoke while paused but may not talk to Hermes; ignored", device_id)
+            self._set_state(device_id, "idle")
+            return
+        if self._heard_ourselves(utt):
+            log.info("housemate: speech from %s overlapped our own audio while paused (%.2f s after it); "
+                     "not taken", room, self._speech_after_playback(utt))
+            self._spawn(self._caption_room(room, "status",
+                                           "Sorry, I couldn't hear you over the speaker; say continue, or tap."))
+            if device_id not in self._playing:
+                self._open_window(device_id, self.cfg.answer_window_s)
+            return
+        loop = self._loop
+
+        def handle(transcript: str) -> str:  # runs in Hermes's agent thread
+            if is_continue(transcript) and not self._was_announced(transcript):
+                loop.call_soon_threadsafe(self._resume_chat, hold.id, device_id)
+                return "continue"
+            if not normalize(transcript):
+                loop.call_soon_threadsafe(self._remind_hold, hold.id, device_id, room, None)
+                return "nothing heard"
+            loop.call_soon_threadsafe(self._remind_hold, hold.id, device_id, room, item)
+            return "not continue: kept as a question for afterwards"
+
+        self._set_state(device_id, "thinking")
+        entry = answers.PendingAnswer(token=answers.new_token(), kind="resume", device_id=device_id, room=room,
+                                      expires_at=time.monotonic() + HOLD_ANSWER_TTL_S, handle=handle, key=hold.id)
+        self.book.add(entry)
+        self._spawn(self._send_answer(device_id, room, utt, entry))
+
+    def _remind_hold(self, hold_id: str, device_id: str, room: str, item: _Utterance | None) -> None:
+        hold = self._prompts.get(hold_id)
+        if hold is None or hold.kind != "resume":  # the pause was lifted meanwhile: an ordinary question
+            if item is not None:
+                self._submit(self.router.chat_id_for(room), item)
+            else:
+                self._set_state(device_id, "idle")
+            return
+        if item is not None:
+            self.router.enqueue(item, hold.chat_id)
+            log.info("housemate: kept a question from %s for after the pause (%d waiting)",
+                     room, self.router.queued(hold.chat_id))
+            self._settle_dropped()
+        self._retarget_hold(hold, device_id, room, speak=False)
+        self._spawn(self._ask(hold, HOLD_AGAIN if item is not None else HOLD_REPROMPT))
+
+    def _resume_chat(self, hold_id: str, device_id: str) -> None:
+        """Someone said or tapped "continue": send /discard from their device, as typing it would.
+        Hermes drops the lost turn (never re-runs it; it stays in the history) and answers the saved
+        question, which is still this chat's running turn."""
+        hold = self._prompts.get(hold_id)
+        if hold is None or hold.kind != "resume":
+            return
+        room = self._device_room(device_id) or hold.room
+        log.info("housemate: continue from %s; asking Hermes to drop the turn lost in the restart", room)
+        self._retire_prompt(hold, "Continuing.")
+        turn = self.router.turn_for(hold.turn_id)
+        waiting = turn.device_id if turn is not None and turn.ended_at is None else None
+        if waiting:
+            self._set_state(waiting, "thinking")
+        if device_id != waiting:
+            self._set_state(device_id, "idle")
+        self._spawn(self._continue_chat(hold, device_id, room))
+
+    async def _continue_chat(self, hold: _Prompt, device_id: str, room: str | None) -> None:
+        if await self._send_discard(hold.chat_id, device_id, room) or self._hold_for(hold.chat_id) is not None:
+            return
+        # Hermes never took the command: the conversation is still paused there, so pause it here too.
+        hold.presented = False  # its card was cleared: show it again
+        self._prompts[hold.id] = hold
+        if room:
+            self._retarget_hold(hold, device_id, room, speak=True)
+
+    async def _send_discard(self, chat_id: str, device_id: str | None, room: str | None) -> bool:
+        """The in-chat ``/discard`` command, from ``device_id`` (any paired device for the side chat).
+        False when it could not be handed to Hermes."""
+        if device_id is None:
+            device_id = self._any_paired_device()
+            if device_id is None:
+                log.warning("housemate: no paired device to lift the pause on %s", chat_id)
+                return False
+        message_id = "hm-discard-" + uuid.uuid4().hex[:12]
+        self._discards[message_id] = room
+        while len(self._discards) > 16:
+            self._discards.popitem(last=False)
+        if chat_id == HOUSEHOLD_CHAT:
+            chat_name = "Household"
+        elif chat_id == SIDE_CHAT:
+            chat_name = "Housemate answers"
+        else:
+            chat_name = _safe_label(self._room_name(chat_id)) or "room"
+        source = self.build_source(chat_id=chat_id, chat_name=chat_name, chat_type="dm", user_id=device_id,
+                                   user_name=_safe_label(self._room_name(room)) if room else "Housemate")
+        try:
+            await self.handle_message(MessageEvent(text=_LOST_TURN_COMMAND, message_type=MessageType.TEXT,
+                                                   source=source, message_id=message_id))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("housemate: asking Hermes to lift the pause on %s failed", chat_id)
+            self._discards.pop(message_id, None)
+            return False
+        return True
+
+    def _any_paired_device(self) -> str | None:
+        try:
+            return next((d.device_id for d in self.store.list_devices() if d.paired), None)
+        except Exception:
+            return None
 
     # ======================================================================== device control
 
@@ -909,6 +1128,10 @@ class HousemateAdapter(BasePlatformAdapter):
                         prompt.kind, prompt.id, device_id, prompt.room)
             return
         log.info("housemate: %s %s answered by a tap on %s", prompt.kind, prompt.id, device_id)
+        if prompt.kind == "resume":
+            if is_continue(str(value or "")):
+                self._resume_chat(prompt.id, device_id)
+            return
         if prompt.kind == "approval":
             choice = parse_yes_no(str(value or ""))
             if choice is None:
@@ -984,10 +1207,26 @@ class HousemateAdapter(BasePlatformAdapter):
 
     async def _deliver_text(self, chat_id: str, content: str, reply_to: Optional[str]) -> None:
         text = content.strip()
-        if chat_id == SIDE_CHAT or not text:
-            return  # the spoken-answer side chat never talks back
-        if text.startswith(_SWALLOWED_PREFIXES):
+        if chat_id == SIDE_CHAT:
+            # The spoken-answer side chat never talks back. Its turns are answer clips our hook vetoes
+            # before any model call, so a lost one holds nothing of the user's: lift that pause at once.
+            if _lost_turn_notice(text):
+                log.warning("housemate: Hermes paused the spoken-answer side chat after a restart; lifting it")
+                self._spawn(self._send_discard(SIDE_CHAT, None, None))
             return
+        if not text or text.startswith(_SWALLOWED_PREFIXES):
+            return
+        if reply_to is not None and reply_to in self._discards:
+            # Hermes's reply to our /discard ("Discarded 1 lost turn(s)…"): shown, never spoken.
+            room = self._discards.pop(reply_to)
+            if room:
+                await self._caption_room(room, "status", _plain(text))
+            return
+        if _lost_turn_notice(text):
+            await self._hold_chat(chat_id, reply_to)
+            return
+        if _paused_notice(text):
+            text = PAUSED_PLAIN  # another pause: nothing a speaker can lift; said without slash commands
         if text.startswith(_STATUS_PREFIXES):
             # Gateway housekeeping ("💾 Self-improvement review: …", "⚡ Interrupting …"): show it on
             # the screen of the room that last spoke, never say it out loud, never end a turn on it.
@@ -1005,6 +1244,11 @@ class HousemateAdapter(BasePlatformAdapter):
             return
         turn = self.router.turn_for(reply_to)
         if turn is not None and turn.chat_id == chat_id:
+            hold = self._hold_for(chat_id)
+            if hold is not None and hold.turn_id == turn.message_id:
+                # The saved question is being answered: the pause was lifted (here, on Desktop or
+                # with `hermes sessions discard`).
+                self._retire_prompt(hold, "")
             self._mark(turn.message_id, "reply_text")
             await self._caption_room(turn.room, "assistant", text)
             if not turn.audio and not turn.stream_open and self.cfg.speak_replies and turn.device_id:
@@ -1318,10 +1562,12 @@ class HousemateAdapter(BasePlatformAdapter):
             if set_state:
                 self._set_state(device_id, "ringing" if ringing else "idle")
             return
-        if playing.kind == "rep" and self.cfg.followup_s > 0:
+        if playing.kind == "rep" and self._holds_device(device_id):
+            self._open_window(device_id, self.cfg.answer_window_s)  # Hermes said the pause notice
+        elif playing.kind == "rep" and self.cfg.followup_s > 0:
             self._open_window(device_id, self.cfg.followup_s)
         elif playing.kind == "ask":
-            if self.book.for_device(device_id, kinds=("approval", "clarify")) is not None:
+            if self._awaits_answer(device_id):
                 self._open_window(device_id, self.cfg.answer_window_s)
             else:
                 self._set_state(device_id, "ringing" if ringing else "idle")  # tap-only prompt
@@ -1331,6 +1577,11 @@ class HousemateAdapter(BasePlatformAdapter):
             self._set_state(device_id, "ringing")
         else:
             self._set_state(device_id, "idle")
+
+    def _awaits_answer(self, device_id: str) -> bool:
+        """The device was just asked something it may answer without the wake word."""
+        return (self.book.for_device(device_id, kinds=("approval", "clarify")) is not None
+                or self._holds_device(device_id))
 
     def _open_window(self, device_id: str, seconds: float) -> None:
         listener = self.listeners.get(device_id)
@@ -1464,9 +1715,11 @@ class HousemateAdapter(BasePlatformAdapter):
         if prompt.device_id not in prompt.shown_to:
             prompt.device_id = min(prompt.shown_to) if prompt.shown_to else None
         if prompt.device_id is not None and prompt.id in self._prompts:
-            if not prompt.smart_denied:
-                self._arm_answer(prompt)
-            self._spawn(self._ask(prompt, prompt.spoken or prompt.question))
+            if prompt.kind in ("approval", "clarify") and not prompt.smart_denied:
+                self._arm_answer(prompt)  # a paused conversation takes its answers in _on_held_utterance
+            if prompt.say_on_present:
+                self._spawn(self._ask(prompt, prompt.spoken or prompt.question))
+            prompt.say_on_present = True
         return True
 
     def _promote(self, room: str | None) -> None:
@@ -1517,7 +1770,7 @@ class HousemateAdapter(BasePlatformAdapter):
         if stream is None:
             if await self._send(prompt.device_id, {"type": "chime", "kind": "prompt"}):
                 self._note_chime(prompt.device_id)
-            if self.book.for_device(prompt.device_id, kinds=("approval", "clarify")) is not None:
+            if self._awaits_answer(prompt.device_id):
                 self._open_window(prompt.device_id, self.cfg.answer_window_s)
             return
         stream.playout.write(pcm)
@@ -1991,5 +2244,5 @@ def _read_choices(labels: list[str]) -> str:
 def _plain(text: str) -> str:
     """Card/caption text: strip the markdown and emoji decorations chat platforms use."""
     out = str(text or "").replace("```", " ").replace("**", "").replace("`", "")
-    out = out.lstrip("⌛⚠️✅❌\U0001F6AB ")
+    out = out.lstrip("⌛⚠️✅❌\U0001F6AB\U0001F5D1⏸ ")
     return " ".join(out.split())

@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from typing import Literal, Sequence
 
-__all__ = ["is_skip", "is_stop", "normalize", "parse_choice", "parse_yes_no", "spoken_label"]
+__all__ = ["is_continue", "is_skip", "is_stop", "normalize", "parse_choice", "parse_yes_no", "spoken_label"]
 
 _APOSTROPHES = str.maketrans({"’": "'", "‘": "'", "`": "'"})
 _NOT_WORD = re.compile(r"[^a-z0-9' ]+")
@@ -82,6 +82,31 @@ def parse_yes_no(text: str) -> Literal["approve", "deny"] | None:
     if _covered_by(words, _DENY):
         return "deny"
     return None
+
+
+# --- continue (a conversation Hermes paused after a restart) ---------------------------------------
+
+_CONTINUE = [
+    ("continue",), ("carry", "on"), ("go", "on"), ("keep", "going"), ("resume",), ("go", "ahead"),
+    ("yes",), ("yep",), ("sure",), ("ok",), ("okay",),
+]
+_CONTINUE_FILLER = {"please", "hey", "hermes", "jarvis", "just", "then", "now", "so"}
+
+
+def is_continue(text: str) -> bool:
+    """"Continue." / "OK, carry on" / "yes": resume a conversation Hermes paused after a restart.
+
+    As strict as ``parse_yes_no``: at most four words, no question, every word part of a continue
+    phrase or filler. "don't continue", "continue the story…" and questions are not.
+    """
+    raw = str(text or "")
+    if "?" in raw:
+        return False
+    tokens = _tokens(raw)
+    if not tokens or len(tokens) > MAX_ANSWER_WORDS:
+        return False
+    words = [t for t in tokens if t not in _CONTINUE_FILLER]
+    return bool(words) and _covered_by(words, _CONTINUE)
 
 
 # --- numbered / labelled choices -----------------------------------------------------------------
