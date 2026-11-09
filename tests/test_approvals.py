@@ -203,12 +203,13 @@ def clip_after_quiet(preroll_starts: float, speech_starts: float, seconds: float
 
 
 async def test_prompt_answer_said_right_after_the_question_is_taken(kit):
-    """People answer about half a second after the question ends. The clip's preroll then starts
-    inside the echo tail, but the speech itself began after it: that is an answer."""
+    """People answer a few tenths of a second after the question ends. The clip's preroll then
+    starts before the question was heard, but the speech itself began after the echo tail: that is
+    an answer."""
     await ask_approval(kit)
     await quiet(kit)
     before = len(kit.events)
-    kit.adapter._on_utterance("dev-kitchen", clip_after_quiet(0.3, 0.6), "followup")
+    kit.adapter._on_utterance("dev-kitchen", clip_after_quiet(0.1, 0.4), "followup")
     await kit.settle()
     assert len(kit.events) == before + 1
     assert kit.events[-1].source.chat_id == SIDE_CHAT

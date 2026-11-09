@@ -86,8 +86,9 @@ INTERCOM_TTL_S = INTERCOM_WINDOW_S + 17.0  # window + the longest utterance + en
 TURN_LOG_SIZE = 100  # finished turns whose stage times the control API reports
 # A spoken approval or clarify answer is taken only from a clip whose speech began this long after
 # the last sound any Housemate device played (and while none plays): never from our own audio. The
-# device reports a stream as heard when its last buffer ends; this covers its output and mic latency.
-ECHO_TAIL_S = 0.5
+# device reports a stream as heard when its last buffer ends; this covers its output and mic latency
+# (Bluetooth speakers included), and is shorter than a person's pause before answering.
+ECHO_TAIL_S = 0.3
 CHIME_S = 1.5  # a satellite chime, counted as playback (it is played on the device, not streamed)
 ANNOUNCED_TTL_S = 600.0  # what we announced this recently is never an approval answer
 
@@ -624,7 +625,8 @@ class HousemateAdapter(BasePlatformAdapter):
             # never answers a prompt. A ringing timer's "stop" still may.
             stop = self.book.for_device(device_id, kinds=("stop",))
             if stop is None:
-                log.info("housemate: an answer from %s overlapped our own audio; not taken", room)
+                log.info("housemate: an answer from %s overlapped our own audio (speech %.2f s after it); not taken",
+                         room, self._speech_after_playback(utt))
                 self.book.drop(token=pending.token)
                 self._reprompt(pending.key, overlapped=True)
                 return
@@ -1233,14 +1235,17 @@ class HousemateAdapter(BasePlatformAdapter):
         """Could this clip hold our own audio? True while any Housemate device plays (in any room:
         earshot groups are a hint, not a guarantee) or when its speech began less than
         ``ECHO_TAIL_S`` after the last sound one played. The preroll before the speech may start
-        earlier: a person answering half a second after the question is still heard."""
-        if self._playing:
-            return True
+        earlier: a person answering a few tenths of a second after the question is still heard."""
+        return bool(self._playing) or self._speech_after_playback(utt) < ECHO_TAIL_S
+
+    def _speech_after_playback(self, utt: Any) -> float:
+        """Seconds from the end of the last sound any device played to the start of the speech in
+        ``utt`` (infinite when nothing has played yet)."""
         began = getattr(utt, "speech_at", None)
         if began is None:
             began = getattr(utt, "started_at", 0.0)
         last = max(self._played_until.values(), default=float("-inf"))
-        return float(began or 0.0) < last + ECHO_TAIL_S
+        return float(began or 0.0) - last
 
     def _note_announced(self, text: str) -> None:
         """The announcer is about to say ``text`` (announcements, timer rings, deliveries)."""
