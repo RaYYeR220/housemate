@@ -82,7 +82,7 @@ hermes housemate bench wake --max-hours 0.5 --no-generate --out ./bench-out
 
 ## 8. Tests and validation
 
-The tests are in [tests/](tests/): <!-- num:tests_passed -->513<!-- /num --> pass against the real Hermes <!-- num:hermes_version -->0.23.0<!-- /num --> ([results/tests.json](results/tests.json)). From a checkout:
+The tests are in [tests/](tests/): <!-- num:tests_passed -->547<!-- /num --> pass against the real Hermes <!-- num:hermes_version -->0.23.0<!-- /num --> ([results/tests.json](results/tests.json)). From a checkout:
 
 ```bash
 python -m pytest -m "not slow"

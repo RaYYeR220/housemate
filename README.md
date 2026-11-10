@@ -102,7 +102,7 @@ Every number here is copied from `results/*.json` by `scripts/render_numbers.py`
 | Wake word recall, clean | <!-- num:wake_recall -->100 %<!-- /num --> of <!-- num:wake_recall_n -->58<!-- /num --> clips |
 | Wake word recall with speech 10 dB lower in the background | <!-- num:wake_recall_noisy -->95 %<!-- /num --> |
 | False wakes | <!-- num:wake_fa_per_hour -->0.11<!-- /num --> per hour (<!-- num:wake_false_accepts -->1<!-- /num --> in <!-- num:wake_negative_hours -->9.2<!-- /num --> h of audiobook speech) |
-| Tests | <!-- num:tests_passed -->513<!-- /num --> passing on Hermes <!-- num:hermes_version -->0.23.0<!-- /num --> |
+| Tests | <!-- num:tests_passed -->547<!-- /num --> passing on Hermes <!-- num:hermes_version -->0.23.0<!-- /num --> |
 
 - **Latency** runs from the last frame of speech (found by Silero VAD in the clip, which is sent in real time like a satellite) to the first frame of reply audio arriving at the satellite, on the same PC as the hub, with one-word answers.
 - **Machine:** Ryzen 5 5600X, RTX 4060 8 GB, Windows 11.
