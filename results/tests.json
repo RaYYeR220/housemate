@@ -1,6 +1,6 @@
 {
  "environment": {
-  "date": "2026-11-10T06:03:30+00:00",
+  "date": "2026-11-10T09:54:06+00:00",
   "hermes_version": "0.23.0",
   "python": "3.14.3",
   "settings": {
@@ -44,12 +44,12 @@
    "python": "3.14.3",
    "real_hermes": true,
    "command": "pytest -q -m 'not slow'",
-   "passed": 547,
+   "passed": 566,
    "failed": 0,
    "skipped": 0,
    "deselected": 4,
    "errors": 0,
-   "summary": "547 passed, 4 deselected in 30.90s"
+   "summary": "566 passed, 4 deselected in 38.44s"
   }
  ]
 }
