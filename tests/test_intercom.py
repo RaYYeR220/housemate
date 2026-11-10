@@ -92,7 +92,7 @@ async def test_approval_card_carries_title_detail_and_command(kit):
     await kit.settle()
     card = kit.hub.controls("dev-kitchen", "prompt")[-1]
     assert card["title"] == "Run a command?" and card["detail"] == "recursive delete"
-    assert card["command"] == "rm -rf ~/junkbox" and card["choices"] == ["Approve", "Deny"]
+    assert card["command"] == "rm -rf  ~/junkbox" and card["choices"] == ["Approve", "Deny"]  # as it will run
 
 
 def test_satellite_info_follows_the_mode(kit):

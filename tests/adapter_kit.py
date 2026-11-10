@@ -161,13 +161,19 @@ class Kit:
         self.adapter._cache_audio = hermes_shim.cache_audio_from_bytes_async  # a temp dir, never a real home
         self.events: list = []
         self.resolved: list[tuple] = []
+        self.actors: list[dict] = []  # who answered each resolved approval (the keywords Hermes got)
         self.clarified: list[tuple] = []
 
         async def handle_message(event) -> None:
             self.events.append(event)
 
+        def resolve(sk, choice, rid, *, actor_id=None, admin_ids=(), extra=None):  # Hermes main's signature
+            self.resolved.append((sk, choice, rid))
+            self.actors.append({"actor_id": actor_id, "admin_ids": admin_ids, "extra": extra})
+            return 1
+
         self.adapter.handle_message = handle_message
-        self.adapter._resolve_approval = lambda sk, choice, rid: self.resolved.append((sk, choice, rid)) or 1
+        self.adapter._resolve_approval = resolve
         self.adapter._resolve_clarify = lambda cid, response: self.clarified.append((cid, response)) or True
         self.listeners: dict[str, FakeListener] = {}
 

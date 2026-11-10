@@ -80,11 +80,30 @@ def test_streaming_piper_registers_as_a_real_tts_provider():
     assert isinstance(ctx.tts, TTSProvider) and ctx.tts.name == "housemate-piper" and ctx.tts.streams_pcm
 
 
+# Hermes's approver check for taps and spoken answers: on the published plugin API after 0.23
+# (``hermes_cli/data/plugin_api.json``: ``gateway.approval_actor:<name>``), absent from 0.23.0, whose
+# validator lists only what it ships. The adapter imports them lazily and works without them.
+NEWER_PUBLIC = {"gateway.approval_actor:approval_refusal", "gateway.approval_actor:clarify_refusal",
+                "gateway.approval_actor:refusal_text"}
+
+
 def test_only_public_hermes_surfaces():
+    import importlib.util
+    import json
+
+    import hermes_cli
     from hermes_cli.plugin_validate_private_imports import private_attribute_findings, private_import_findings
 
-    assert private_import_findings(ROOT) == []
+    findings = private_import_findings(ROOT)
+    if importlib.util.find_spec("gateway.approval_actor") is None:  # a Hermes from before the approver check
+        newer = {name.replace(":", ".") for name in NEWER_PUBLIC}
+        findings = [f for f in findings if f.split(" ", 1)[-1] not in newer]
+    assert findings == []
     assert private_attribute_findings(ROOT) == []
+    api = Path(hermes_cli.__file__).resolve().parent / "data" / "plugin_api.json"
+    if api.is_file():  # a Hermes that publishes its plugin API lists them
+        data = json.loads(api.read_text(encoding="utf-8-sig"))
+        assert NEWER_PUBLIC <= {entry for group in data["groups"] for entry in group["entries"]}
 
 
 async def test_voice_event_built_with_real_classes(tmp_path):

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import json
 import logging
 import re
@@ -32,6 +33,7 @@ import time
 import uuid
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field, replace
+from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -110,6 +112,11 @@ TURN_LOG_SIZE = 100  # finished turns whose stage times the control API reports
 ECHO_TAIL_S = 0.3
 CHIME_S = 1.5  # a satellite chime, counted as playback (it is played on the device, not streamed)
 ANNOUNCED_TTL_S = 600.0  # what we announced this recently is never an approval answer
+# What "Approve" resolves to: the narrowest tier Hermes offers on the card. With none of them
+# offered (Hermes allows only Deny) the card has no Approve and a spoken "approve" is refused.
+_APPROVE_TIERS = ("once", "session", "always")
+DENY_ONLY_SAID = "This command can't be approved from here. Say deny, or tap it."
+DENY_ONLY_TAPPED = "This command can only be denied here."
 
 
 def _paused_notice(text: str) -> bool:
@@ -186,7 +193,8 @@ class _Prompt:
     skippable: bool = False  # a clarify question the user may skip ("Or say skip.")
     title: str = ""  # approval card: the short question, what it is, the command itself
     detail: str = ""
-    command: str = ""
+    command: str = ""  # exactly as Hermes will run it: never cut, never re-spaced
+    approve_as: str | None = None  # approval: the tier "Approve" resolves to; None = Deny only
     spoken: str = ""  # what is said when the prompt comes up
     smart_denied: bool = False  # Hermes's smart approval flagged the command: tap only
     presented: bool = False  # shown (and spoken, armed): the first open prompt of its room
@@ -1136,14 +1144,21 @@ class HousemateAdapter(BasePlatformAdapter):
             choice = parse_yes_no(str(value or ""))
             if choice is None:
                 return  # an unknown button never approves
-            self._apply_approval(prompt, choice, via="tap")
+            if choice == "approve" and prompt.approve_as is None:
+                log.warning("housemate: ignored an approve tap on %s from %s (Hermes offers only Deny)",
+                            prompt.id, device_id)
+                self._spawn(self._send(device_id, {"type": "caption", "role": "status", "text": DENY_ONLY_TAPPED}))
+                return
+            if self._refused(prompt, device_id, via="tap"):
+                return
+            self._apply_approval(prompt, choice, actor_id=device_id)
         else:
             label = str(value or "")
             pick = label if label in prompt.choices else parse_choice(label, prompt.choices)
             if pick is None and isinstance(value, int) and 1 <= value <= len(prompt.choices):
                 pick = prompt.choices[value - 1]
-            if pick is not None:
-                self._apply_clarify(prompt, pick, via="tap")
+            if pick is not None and not self._refused(prompt, device_id, via="tap"):
+                self._apply_clarify(prompt, pick)
 
     def _satellite_info(self) -> dict:
         """What a satellite shows besides its room (sent with ``paired``): the wake phrase of the model
@@ -1654,15 +1669,23 @@ class HousemateAdapter(BasePlatformAdapter):
         card_id = prompt.request_id or f"appr-{uuid.uuid4().hex[:12]}"
         what = " ".join(str(prompt.description or "").split()) or "run a command"
         flagged = bool(getattr(prompt, "smart_denied", False))
+        approve_as = _approve_tier(getattr(prompt, "actions", None))
+        # Spoken: what it is (Hermes's description), never the command; the card shows the command whole.
         if flagged:
             # Hermes's smart approval flagged it: say so, and take the answer from a tap only.
-            question = f"Careful: Hermes's safety check flagged a command: {what}. Tap approve or deny on the screen."
-        else:
+            question = (f"Careful: Hermes's safety check flagged a command: {what}. "
+                        + ("Tap approve or deny on the screen." if approve_as else "It can only be denied: tap deny on the screen."))
+        elif approve_as:
             question = f"I need your OK to run a command: {what}. Say approve, or deny."
+        else:
+            question = f"Hermes wants to run a command: {what}. It can't be approved from here. Say deny, or tap it."
+        if flagged:
+            title = "Flagged command: run it?"
+        else:
+            title = "Run a command?" if approve_as else "Can't approve here"
         entry = _Prompt("approval", card_id, chat_id, prompt.session_key, room, device_id, question,
-                        ["Approve", "Deny"], request_id=prompt.request_id,
-                        title="Flagged command: run it?" if flagged else "Run a command?",
-                        detail=what, command=" ".join(str(prompt.command or "").split())[:400],
+                        ["Approve", "Deny"] if approve_as else ["Deny"], request_id=prompt.request_id,
+                        title=title, detail=what, command=str(prompt.command or ""), approve_as=approve_as,
                         spoken=question, smart_denied=flagged, turn_id=turn.message_id if turn else None)
         if not await self._open_prompt(entry):
             log.warning("housemate: no device online in %s for the approval; it will time out (deny)", room)
@@ -1781,6 +1804,7 @@ class HousemateAdapter(BasePlatformAdapter):
         if prompt.device_id is None:
             return
         loop = self._loop
+        actor_id = prompt.device_id  # the clip carrying this answer's one-time token comes from this device
 
         def handle(transcript: str) -> str:  # runs in Hermes's agent thread
             if prompt.kind == "approval":
@@ -1791,38 +1815,45 @@ class HousemateAdapter(BasePlatformAdapter):
                 if choice is None:
                     loop.call_soon_threadsafe(self._reprompt, prompt.id)
                     return "not an approve/deny answer"
+                if choice == "approve" and prompt.approve_as is None:
+                    loop.call_soon_threadsafe(partial(self._reprompt, prompt.id, say=DENY_ONLY_SAID))
+                    return "approve refused: Hermes offers only deny"
+                refusal = self._refusal(prompt, actor_id)
+                if refusal is not None:
+                    loop.call_soon_threadsafe(self._tell, prompt.id, refusal)
+                    return "refused by Hermes's approvers"
                 try:
-                    resolved = self._resolve_approval_card(prompt, choice)
+                    resolved = self._resolve_approval_card(prompt, choice, actor_id)
                 except Exception:
                     log.exception("housemate: resolving the approval failed")
                     resolved = 0
                 loop.call_soon_threadsafe(self._approval_done, prompt.id, choice, resolved)
                 return f"{choice} (resolved {resolved})"
-            if prompt.skippable and is_skip(transcript):
-                try:
-                    ok = self._resolve_clarify_card(prompt, clarify_skip_value())
-                except Exception:
-                    log.exception("housemate: skipping the clarify prompt failed")
-                    ok = False
-                loop.call_soon_threadsafe(self._clarify_done, prompt.id, "Skipped.", ok)
-                return "clarify skipped"
-            if prompt.choices:
+            skipped = prompt.skippable and is_skip(transcript)
+            if skipped:
+                pick, shown = clarify_skip_value(), "Skipped."
+            elif prompt.choices:
                 pick = parse_choice(transcript, prompt.choices)
                 if pick is None:
                     loop.call_soon_threadsafe(self._reprompt, prompt.id)
                     return "no choice matched"
+                shown = pick
             else:
-                pick = transcript.strip()
+                pick = shown = transcript.strip()
                 if not pick:
                     loop.call_soon_threadsafe(self._reprompt, prompt.id)
                     return "empty answer"
+            refusal = self._refusal(prompt, actor_id)
+            if refusal is not None:
+                loop.call_soon_threadsafe(self._tell, prompt.id, refusal)
+                return "refused by Hermes's approvers"
             try:
                 ok = self._resolve_clarify_card(prompt, pick)
             except Exception:
                 log.exception("housemate: resolving the clarify prompt failed")
                 ok = False
-            loop.call_soon_threadsafe(self._clarify_done, prompt.id, pick, ok)
-            return f"clarify answered ({'resolved' if ok else 'already closed'})"
+            loop.call_soon_threadsafe(self._clarify_done, prompt.id, shown, ok)
+            return f"clarify {'skipped' if skipped else 'answered'} ({'resolved' if ok else 'already closed'})"
 
         ttl = APPROVAL_ANSWER_TTL_S if prompt.kind == "approval" else 3600.0
         self.book.drop(key=prompt.id)
@@ -1852,11 +1883,17 @@ class HousemateAdapter(BasePlatformAdapter):
         except Exception:
             log.exception("housemate: sending a spoken answer failed")
 
-    def _resolve_approval_card(self, prompt: _Prompt, choice: str) -> int:
+    def _resolve_approval_card(self, prompt: _Prompt, choice: str, actor_id: str) -> int:
+        """Resolve the card's own request as ``actor_id`` (the answering device: the ``user_id`` of its
+        messages), so Hermes enforces a narrowed ``approvals.approvers`` list on taps and spoken answers."""
+        tier = prompt.approve_as if choice == "approve" else "deny"
+        if tier is None:
+            return 0  # Hermes offered only Deny
         resolve = self._resolve_approval
         if resolve is None:
             from tools.approval import resolve_gateway_approval_card as resolve
-        return int(resolve(prompt.session_key, "once" if choice == "approve" else "deny", prompt.request_id) or 0)
+        return int(_call_as_actor(resolve, (prompt.session_key, tier, prompt.request_id),
+                                  actor_id=actor_id, extra=self.config.extra) or 0)
 
     def _resolve_clarify_card(self, prompt: _Prompt, response: str) -> bool:
         resolve = self._resolve_clarify
@@ -1864,15 +1901,52 @@ class HousemateAdapter(BasePlatformAdapter):
             from tools.clarify_gateway import resolve_gateway_clarify as resolve
         return bool(resolve(prompt.id, response))
 
-    def _apply_approval(self, prompt: _Prompt, choice: str, *, via: str) -> None:
+    def _refusal(self, prompt: _Prompt, actor_id: str) -> str | None:
+        """Hermes's "only <requester> can answer this" when ``actor_id`` may not answer ``prompt``
+        (``approvals.approvers`` narrowed), else None. The check is Hermes's own public one; Hermes
+        0.23 has none (and no approvers list to enforce)."""
+        try:
+            from gateway.approval_actor import approval_refusal, clarify_refusal, refusal_text
+        except ImportError:
+            return None
+        if prompt.kind == "approval":
+            requester = approval_refusal(prompt.session_key, actor_id, request_id=prompt.request_id,
+                                         extra=self.config.extra)
+        elif prompt.kind == "clarify":
+            requester = clarify_refusal(prompt.id, actor_id, extra=self.config.extra)
+        else:
+            return None
+        if requester is None:
+            return None
+        return _plain(refusal_text(requester)) or "Only the person who asked can answer this."
+
+    def _refused(self, prompt: _Prompt, device_id: str, *, via: str) -> bool:
+        """A tap Hermes's approvers check refuses: tell that device why; the card stays for the others."""
+        refusal = self._refusal(prompt, device_id)
+        if refusal is None:
+            return False
+        log.warning("housemate: %s on %s %s from %s refused by Hermes: %s", via, prompt.kind, prompt.id, device_id, refusal)
+        self._spawn(self._send(device_id, {"type": "caption", "role": "status", "text": refusal}))
+        return True
+
+    def _tell(self, card_id: str, note: str) -> None:
+        """Say ``note`` on the prompt's device and show it in the room; the card stays, not re-armed."""
+        prompt = self._prompts.get(card_id)
+        if prompt is None or prompt.device_id is None:
+            return
+        self.book.drop(key=prompt.id)
+        self._spawn(self._caption_room(prompt.room, "status", note))
+        self._spawn(self._ask(prompt, note))
+
+    def _apply_approval(self, prompt: _Prompt, choice: str, *, actor_id: str) -> None:
         resolved = 0
         try:
-            resolved = self._resolve_approval_card(prompt, choice)
+            resolved = self._resolve_approval_card(prompt, choice, actor_id)
         except Exception:
             log.exception("housemate: resolving the approval failed")
         self._approval_done(prompt.id, choice, resolved)
 
-    def _apply_clarify(self, prompt: _Prompt, pick: str, *, via: str) -> None:
+    def _apply_clarify(self, prompt: _Prompt, pick: str) -> None:
         ok = False
         try:
             ok = self._resolve_clarify_card(prompt, pick)
@@ -1900,12 +1974,15 @@ class HousemateAdapter(BasePlatformAdapter):
         if prompt.device_id and ok:
             self._set_state(prompt.device_id, "thinking")
 
-    def _reprompt(self, card_id: str, *, overlapped: bool = False) -> None:
+    def _reprompt(self, card_id: str, *, overlapped: bool = False, say: str = "") -> None:
         """Ask again (at most ``MAX_REPROMPTS`` times, then a tap is the only answer). ``overlapped``:
-        the answer clip held our own audio; ask on the screen and listen again once it is quiet."""
+        the answer clip held our own audio; ask on the screen and listen again once it is quiet.
+        ``say``: why the answer was not taken (shown and said instead of "didn't catch that")."""
         prompt = self._prompts.get(card_id)
         if prompt is None or prompt.device_id is None:
             return
+        if say:
+            self._spawn(self._caption_room(prompt.room, "status", say))
         prompt.tries += 1
         if prompt.tries > MAX_REPROMPTS:
             self.book.drop(key=prompt.id)
@@ -1913,14 +1990,22 @@ class HousemateAdapter(BasePlatformAdapter):
             self._set_state(prompt.device_id, "idle")
             return
         self._arm_answer(prompt)
+        deny_only = prompt.kind == "approval" and prompt.approve_as is None
         if overlapped:
-            say = "say approve, or deny" if prompt.kind == "approval" else "answer again"
+            if prompt.kind == "approval":
+                answer = "say deny" if deny_only else "say approve, or deny"
+            else:
+                answer = "answer again"
             self._spawn(self._caption_room(prompt.room, "status",
-                                           f"Sorry, I couldn't hear you over the speaker; {say}, or tap."))
+                                           f"Sorry, I couldn't hear you over the speaker; {answer}, or tap."))
             if prompt.device_id not in self._playing:
                 self._open_window(prompt.device_id, self.cfg.answer_window_s)
             return
-        if prompt.kind == "approval":
+        if say:
+            again = say
+        elif deny_only:
+            again = "Sorry, I didn't catch that. Say deny, or tap it."
+        elif prompt.kind == "approval":
             again = "Sorry, I didn't catch that. Say approve, or deny."
         elif prompt.choices:
             again = "Sorry, which one? " + _read_choices(prompt.choices[:6]) + "."
@@ -2216,6 +2301,27 @@ def _truthy(value: str) -> bool:
 
 def _id_set(value: str) -> set[str]:
     return {part.strip() for part in str(value or "").split(",") if part.strip()}
+
+
+def _approve_tier(actions: Any) -> str | None:
+    """The tier "Approve" resolves to: the narrowest one among the card's ``(label, choice, style)``
+    rows, or None when Hermes offers only Deny (no Approve on the card, a spoken one is refused)."""
+    offered = {str(row[1]) for row in (actions or ()) if isinstance(row, (tuple, list)) and len(row) >= 2}
+    return next((tier for tier in _APPROVE_TIERS if tier in offered), None)
+
+
+def _call_as_actor(fn: Callable[..., Any], args: tuple, **actor: Any) -> Any:
+    """``fn(*args, **actor)``: Hermes checks who answers. A resolver without those keywords (Hermes
+    0.23) is called without them; only a signature that cannot take them falls back, so a TypeError
+    raised inside ``fn`` is never retried as an answer without its actor."""
+    try:
+        inspect.signature(fn).bind(*args, **actor)
+    except TypeError:
+        log.debug("housemate: this Hermes resolves approvals without an actor check")
+        return fn(*args)
+    except ValueError:
+        pass  # no signature to read: call it as the current Hermes would be called
+    return fn(*args, **actor)
 
 
 def clarify_skip_value() -> str:

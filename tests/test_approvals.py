@@ -20,12 +20,16 @@ async def kit(tmp_path):
     return k
 
 
-def approval(request_id="req-1", *, smart_denied=False):
+ALLOW_ONCE = [("Allow Once", "once", "primary"), ("Deny", "deny", "danger")]
+DENY_ONLY = [("Deny", "deny", "danger")]  # what Hermes offers when no card could show the whole command
+
+
+def approval(request_id="req-1", *, smart_denied=False, command="rm -rf ./junk", actions=ALLOW_ONCE):
     return ExecApprovalPrompt(
         chat_id="household", session_key=SESSION,
         text="Hermes wants to run a command that needs your OK",
-        actions=[("Allow Once", "once", "primary"), ("Deny", "deny", "danger")],
-        command="rm -rf ./junk", description="recursive delete", smart_denied=smart_denied, request_id=request_id,
+        actions=list(actions),
+        command=command, description="recursive delete", smart_denied=smart_denied, request_id=request_id,
     )
 
 
@@ -573,3 +577,231 @@ async def test_turn_end_keeps_prompts_of_a_newer_turn(kit):
     await kit.adapter.on_processing_complete(first, "success")  # late signal for the first turn
     assert "req-3" in kit.adapter._prompts
     assert second.message_id != first.message_id
+
+
+# --- what the card shows, and who may answer it (catalog review of 73df1a6) -------------------------
+
+
+def long_command(length: int = 2500) -> str:
+    """A command Hermes may ask about: real whitespace (newlines, tabs, runs of spaces) and a
+    dangerous tail far past the first few hundred characters."""
+    head = 'for f in *.log; do\n\tgzip  -9   "$f"    # keep   the   spacing\ndone\n'
+    tail = "\n  rm -rf  ~/    # the dangerous tail\n"
+    body = head
+    while len(body) + len(tail) < length:
+        body += "echo   'step'\t&&  true\n"
+    return body[: length - len(tail)] + tail
+
+
+def test_the_adapter_claims_no_card_budget_of_its_own():
+    """The card shows every command whole, so Hermes's default card budget (3000 characters) stands:
+    longer commands get Hermes's full-command message first, or a Deny-only card."""
+    from housemate.adapter import HousemateAdapter
+
+    assert "_EA_CMD_BUDGET" not in vars(HousemateAdapter)
+    assert "_EA_CARD_CAP" not in vars(HousemateAdapter)
+
+
+async def test_long_command_reaches_the_card_byte_for_byte(kit):
+    import json
+
+    from housemate.core.protocol import encode
+
+    cmd = long_command()
+    assert len(cmd) == 2500 and cmd.index("rm -rf") > 2000 and "\t" in cmd and "   " in cmd
+    await start_turn(kit)
+    result = await kit.adapter._send_exec_approval_prompt(approval("req-L", command=cmd))
+    await kit.settle()
+    assert result.success
+    card = kit.hub.controls("dev-kitchen", "prompt")[-1]
+    assert card["command"] == cmd  # not cut, not re-spaced
+    assert json.loads(encode(card))["command"] == cmd  # and so on the wire
+    assert card["choices"] == ["Approve", "Deny"]
+    spoken = kit.tts.texts[-1]
+    assert "recursive delete" in spoken and "say approve, or deny" in spoken.lower()
+    assert "rm -rf" not in spoken and "gzip" not in spoken  # the voice says what it is, never the command
+
+
+async def test_full_command_sent_ahead_of_the_card_is_never_spoken(kit):
+    """After 0.23, Hermes sends a command longer than its card budget as one fenced message right
+    before the card. It is shown at most, never read aloud, and the card still has it whole."""
+    cmd = long_command(4200)
+    await start_turn(kit)
+    before = len(kit.tts.texts)
+    await kit.adapter.send("household", f"```\n{cmd}\n```")
+    await kit.settle()
+    assert len(kit.tts.texts) == before
+    assert not [m for m in kit.hub.controls("dev-kitchen", "play.begin") if m["stream_id"].startswith("rep-")]
+    await kit.adapter._send_exec_approval_prompt(approval("req-X", command=cmd))
+    await kit.settle()
+    assert kit.hub.controls("dev-kitchen", "prompt")[-1]["command"] == cmd
+
+
+@pytest.mark.parametrize("actions", [DENY_ONLY, []], ids=["deny-only", "no-actions"])
+async def test_deny_only_card_offers_no_approve(kit, actions):
+    await start_turn(kit)
+    await kit.adapter._send_exec_approval_prompt(approval("req-D", actions=actions))
+    await kit.settle()
+    card = kit.hub.controls("dev-kitchen", "prompt")[-1]
+    assert card["choices"] == ["Deny"]
+    spoken = kit.tts.texts[-1].lower()
+    assert "say deny" in spoken and "say approve" not in spoken
+    # a forged Approve tap does nothing but say why
+    await kit.adapter._on_control("dev-kitchen", {"type": "ui.action", "kind": "approve", "id": "req-D"})
+    await kit.adapter._on_control("dev-kitchen", {"type": "ui.action", "kind": "prompt", "id": "req-D", "value": "Approve"})
+    await kit.settle()
+    assert kit.resolved == []
+    assert "req-D" in kit.adapter._prompts
+    assert "only be denied" in kit.hub.controls("dev-kitchen", "caption")[-1]["text"]
+    await kit.adapter._on_control("dev-kitchen", {"type": "ui.action", "kind": "deny", "id": "req-D"})
+    assert kit.resolved == [(SESSION, "deny", "req-D")]
+
+
+async def test_spoken_approve_is_refused_when_only_deny_is_offered(kit):
+    await start_turn(kit)
+    await kit.adapter._send_exec_approval_prompt(approval("req-D", actions=DENY_ONLY))
+    await kit.settle()
+    out = await answer_by_voice(kit, "Approve.")
+    assert out["action"] == "block"
+    await kit.settle()
+    assert kit.resolved == []
+    assert "req-D" in kit.adapter._prompts
+    status = [m["text"] for m in kit.hub.controls("dev-kitchen", "caption") if m["role"] == "status"]
+    assert any("can't be approved" in text for text in status)
+    assert "can't be approved" in kit.tts.texts[-1]
+    await answer_by_voice(kit, "Deny.")  # still listening for the answer it can take
+    assert kit.resolved == [(SESSION, "deny", "req-D")]
+
+
+async def test_approve_resolves_with_the_narrowest_tier_offered(kit):
+    await start_turn(kit)
+    actions = [("Allow for this session", "session", ""), ("Always allow", "always", ""), ("Deny", "deny", "danger")]
+    await kit.adapter._send_exec_approval_prompt(approval("req-S", actions=actions))
+    await kit.settle()
+    assert kit.hub.controls("dev-kitchen", "prompt")[-1]["choices"] == ["Approve", "Deny"]
+    await kit.adapter._on_control("dev-kitchen", {"type": "ui.action", "kind": "approve", "id": "req-S"})
+    assert kit.resolved == [(SESSION, "session", "req-S")]
+
+
+async def test_taps_and_spoken_answers_name_the_answering_device(kit):
+    kit.add_device("dev-tablet", "Kitchen", "Kitchen tablet")
+    await ask_approval(kit, "req-A")
+    await kit.adapter._send_exec_approval_prompt(approval("req-B"))
+    await kit.settle()
+    await answer_by_voice(kit, "Approve.")  # spoken on the asking device
+    await kit.settle()
+    await kit.adapter._on_control("dev-tablet", {"type": "ui.action", "kind": "deny", "id": "req-B"})
+    assert kit.resolved == [(SESSION, "once", "req-A"), (SESSION, "deny", "req-B")]
+    assert [a["actor_id"] for a in kit.actors] == ["dev-kitchen", "dev-tablet"]
+    assert all(a["extra"] is kit.adapter.config.extra for a in kit.actors)
+
+
+async def test_hermes_023_resolver_without_actor_keywords_still_resolves(kit):
+    calls = []
+    kit.adapter._resolve_approval = lambda sk, choice, rid: calls.append((sk, choice, rid)) or 1
+    await ask_approval(kit, "req-A")
+    await kit.adapter._send_exec_approval_prompt(approval("req-B"))
+    await kit.settle()
+    await answer_by_voice(kit, "Approve.")
+    await kit.settle()
+    await kit.adapter._on_control("dev-kitchen", {"type": "ui.action", "kind": "approve", "id": "req-B"})
+    assert calls == [(SESSION, "once", "req-A"), (SESSION, "once", "req-B")]
+
+
+async def test_a_type_error_inside_the_resolver_is_not_retried_without_the_actor(kit):
+    calls = []
+
+    def resolve(sk, choice, rid, *, actor_id=None, admin_ids=(), extra=None):
+        calls.append(actor_id)
+        raise TypeError("something inside Hermes")
+
+    kit.adapter._resolve_approval = resolve
+    await ask_approval(kit)
+    await kit.adapter._on_control("dev-kitchen", {"type": "ui.action", "kind": "approve", "id": "req-1"})
+    assert calls == ["dev-kitchen"]
+
+
+def install_approval_actor(monkeypatch, refuse: dict) -> list:
+    """A Hermes with ``gateway.approval_actor`` (after 0.23): ``refuse`` maps a device id to the
+    requester Hermes names when it refuses that device."""
+    import sys
+    import types
+
+    calls: list = []
+    mod = types.ModuleType("gateway.approval_actor")
+
+    def approval_refusal(session_key, actor_id, *, admin_ids=(), request_id=None, extra=None):
+        calls.append(("approval", session_key, actor_id, request_id, extra))
+        return refuse.get(actor_id)
+
+    def clarify_refusal(clarify_id, actor_id, *, admin_ids=(), extra=None):
+        calls.append(("clarify", clarify_id, actor_id, extra))
+        return refuse.get(actor_id)
+
+    mod.approval_refusal = approval_refusal
+    mod.clarify_refusal = clarify_refusal
+    mod.refusal_text = lambda requester: f"Only {requester} can answer this approval."
+    monkeypatch.setitem(sys.modules, "gateway.approval_actor", mod)
+    return calls
+
+
+async def test_a_device_hermes_refuses_cannot_approve_and_the_card_stays(kit, monkeypatch):
+    calls = install_approval_actor(monkeypatch, {"dev-tablet": "Kitchen"})
+    kit.add_device("dev-tablet", "Kitchen", "Kitchen tablet")
+    await ask_approval(kit)
+    await kit.adapter._on_control("dev-tablet", {"type": "ui.action", "kind": "approve", "id": "req-1"})
+    await kit.settle()
+    assert kit.resolved == [] and "req-1" in kit.adapter._prompts
+    assert kit.hub.controls("dev-tablet", "caption")[-1]["text"] == "Only Kitchen can answer this approval."
+    assert ("approval", SESSION, "dev-tablet", "req-1", kit.adapter.config.extra) in calls
+    await kit.adapter._on_control("dev-kitchen", {"type": "ui.action", "kind": "approve", "id": "req-1"})
+    assert kit.resolved == [(SESSION, "once", "req-1")]
+
+
+async def test_spoken_approval_from_a_refused_device_is_not_taken(kit, monkeypatch):
+    install_approval_actor(monkeypatch, {"dev-kitchen": "Office"})
+    await ask_approval(kit)
+    await answer_by_voice(kit, "Approve.")
+    await kit.settle()
+    assert kit.resolved == [] and "req-1" in kit.adapter._prompts
+    assert kit.tts.texts[-1] == "Only Office can answer this approval."
+
+
+async def test_clarify_tap_from_a_refused_device_is_not_taken(kit, monkeypatch):
+    calls = install_approval_actor(monkeypatch, {"dev-tablet": "Kitchen"})
+    kit.add_device("dev-tablet", "Kitchen", "Kitchen tablet")
+    await start_turn(kit)
+    await kit.adapter.send_clarify("household", "Which dinner?", ["Pasta", "Pizza"], "clar-R", SESSION)
+    await kit.settle()
+    await kit.adapter._on_control("dev-tablet", {"type": "ui.action", "kind": "prompt", "id": "clar-R", "value": "Pasta"})
+    await kit.settle()
+    assert kit.clarified == [] and "clar-R" in kit.adapter._prompts
+    assert kit.hub.controls("dev-tablet", "caption")[-1]["text"] == "Only Kitchen can answer this approval."
+    assert ("clarify", "clar-R", "dev-tablet", kit.adapter.config.extra) in calls
+    await kit.adapter._on_control("dev-kitchen", {"type": "ui.action", "kind": "prompt", "id": "clar-R", "value": "Pizza"})
+    assert kit.clarified == [("clar-R", "Pizza")]
+
+
+async def test_spoken_clarify_answer_from_a_refused_device_is_not_taken(kit, monkeypatch):
+    calls = install_approval_actor(monkeypatch, {"dev-kitchen": "Office"})
+    await start_turn(kit)
+    await kit.adapter.send_clarify("household", "Which dinner?", ["Pasta", "Pizza"], "clar-V", SESSION)
+    await kit.settle()
+    await answer_by_voice(kit, "Pasta.")
+    await kit.settle()
+    assert kit.clarified == [] and "clar-V" in kit.adapter._prompts
+    assert ("clarify", "clar-V", "dev-kitchen", kit.adapter.config.extra) in calls
+    assert kit.tts.texts[-1] == "Only Office can answer this approval."
+
+
+async def test_without_hermes_approval_actor_answers_still_resolve(kit, monkeypatch):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "gateway.approval_actor", None)  # Hermes 0.23: no such module
+    await ask_approval(kit)
+    await kit.adapter._on_control("dev-kitchen", {"type": "ui.action", "kind": "approve", "id": "req-1"})
+    assert kit.resolved == [(SESSION, "once", "req-1")]
+    await kit.adapter.send_clarify("household", "Which dinner?", ["Pasta", "Pizza"], "clar-M", SESSION)
+    await kit.settle()
+    await answer_by_voice(kit, "Pizza.")
+    assert kit.clarified == [("clar-M", "Pizza")]
