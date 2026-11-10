@@ -9,7 +9,7 @@ Most homes have a drawer of old phones. Housemate turns them into room speakers 
 | | | |
 |---|---|---|
 | ![A kitchen phone speaking the answer](docs/screens/satellite-speaking.png) | ![A spoken approval card for an rm -rf command](docs/screens/satellite-approval.png) | ![The pairing screen with a six-digit code](docs/screens/satellite-pairing.png) |
-| The kitchen asked, so the kitchen answers. | Hermes asks before `rm -rf`. Say "approve" or "deny", or tap. | Pair a device once with a six-digit code. |
+| The kitchen asked, so the kitchen answers. | Hermes asks before `rm -rf`, and the card shows the whole command. Say "approve" or "deny", or tap. | Pair a device once with a six-digit code. |
 
 ## What it does
 
@@ -19,7 +19,7 @@ Most homes have a drawer of old phones. Housemate turns them into room speakers 
 - **Timers and alarms that ring where you set them.** They are kept in SQLite, ring with no model call, and survive a restart. Say "stop" (no wake word needed) or tap the screen.
 - **Intercom and announcements.** "Tell the kitchen dinner's ready" is spoken in the kitchen. On a speaker, tap the other room's name and talk to send a voice message.
 - **Room screens.** Recipes, lists and steps go on the screen as a card while Hermes says one sentence about them.
-- **Spoken approvals.** When Hermes needs your OK for a command, the speaker in that room reads it out and shows Approve and Deny. Answer out loud or tap. No answer means deny.
+- **Spoken approvals.** When Hermes needs your OK for a command, the speaker in that room says what it is and shows the whole command with Approve and Deny. Answer out loud or tap. No answer means deny.
 - **A Rooms page in Hermes Desktop.** A live plan of the home: every device and how far it hears, what each one is doing, which device won the last wake word, running timers, the last exchange per room, an announce box and pairing by QR code.
 - **Everything else Hermes does.** Email, files, the web, Home Assistant and your other plugins, by voice, through the same agent.
 
@@ -80,6 +80,8 @@ Headphones help too: they keep the reply out of the microphone.
   - The parser is strict. The whole answer must be a short approve or deny phrase ("approve", "yes", "go ahead"; "deny", "no", "cancel") with no question in it. Anything else is asked again and in the end times out as a deny.
   - Audio that overlaps the hub's own playback, and text the hub announced, never counts as an answer.
   - A command flagged by Hermes's smart approval can only be approved by a tap. Taps count only from allowed devices in that room that were shown the card.
+  - The card shows the command exactly as Hermes will run it, never cut or re-spaced; a long one scrolls inside the card. The voice reads only Hermes's short description of it. Approve appears only when Hermes offers it: when Hermes allows only Deny, a spoken "approve" is refused.
+  - Each answer tells Hermes which device gave it (its device id, the same `user_id` its questions carry), so a narrowed `approvals.approvers` list applies to speakers as well. A device Hermes refuses hears "Only … can answer this", and the card stays for the person who asked.
 - **Timers.** A scheduler inside the hub, stored in the plugin's SQLite database. A ring is a chime plus the spoken label in the timer's room, repeated every 20 s until stopped (for up to 3 minutes), with no model call. While a timer rings, "stop" works without the wake word.
 - **Rooms page.** `desktop/plugin.js` uses only the Desktop plugin SDK. On Hermes 0.23.0 it calls the plugin's REST routes (`/api/plugins/housemate/*`, behind the dashboard sign-in); on builds with plugin RPC it calls `plugin.housemate.rooms.*`. Live updates arrive as the `plugin.housemate.rooms.changed` event.
 
@@ -102,7 +104,7 @@ Every number here is copied from `results/*.json` by `scripts/render_numbers.py`
 | Wake word recall, clean | <!-- num:wake_recall -->100 %<!-- /num --> of <!-- num:wake_recall_n -->58<!-- /num --> clips |
 | Wake word recall with speech 10 dB lower in the background | <!-- num:wake_recall_noisy -->95 %<!-- /num --> |
 | False wakes | <!-- num:wake_fa_per_hour -->0.11<!-- /num --> per hour (<!-- num:wake_false_accepts -->1<!-- /num --> in <!-- num:wake_negative_hours -->9.2<!-- /num --> h of audiobook speech) |
-| Tests | <!-- num:tests_passed -->547<!-- /num --> passing on Hermes <!-- num:hermes_version -->0.23.0<!-- /num --> |
+| Tests | <!-- num:tests_passed -->566<!-- /num --> passing on Hermes <!-- num:hermes_version -->0.23.0<!-- /num --> |
 
 - **Latency** runs from the last frame of speech (found by Silero VAD in the clip, which is sent in real time like a satellite) to the first frame of reply audio arriving at the satellite, on the same PC as the hub, with one-word answers.
 - **Machine:** Ryzen 5 5600X, RTX 4060 8 GB, Windows 11.
@@ -234,7 +236,7 @@ hermes housemate bench [wake latency tests]  measure; writes results/*.json
 | Logs | The gateway log records timings and the first 80 characters of spoken answers to prompts ("approve", "stop"). |
 | Background work | Inside the gateway only: the hub, one listener per online device (wake word and VAD on a thread pool), the timer scheduler, a 5-second watchdog and the model load at start. The CLI and the tools only call the control API. |
 | Speaking in other rooms | `housemate_announce` lets the agent speak in other rooms, and `/announce` does the same from any chat. Announced text is never accepted as an approval answer. |
-| Approvals | Spoken and tapped answers resolve Hermes's own approval card by its request id. No answer is Hermes's timeout, which denies. Commands flagged by smart approval take a tap only. Nothing is auto-approved. |
+| Approvals | Spoken and tapped answers resolve Hermes's own approval card by its request id, as the device that answered. The card shows the whole command. No answer is Hermes's timeout, which denies. Commands flagged by smart approval take a tap only. Nothing is auto-approved. |
 | Bench (only when you run it) | `hermes housemate bench wake` downloads 20 LibriVox MP3s (about 266 MB, public domain, SHA-1 pinned) from archive.org into `plugin-data/housemate/bench/` and, if `edge-tts` is installed, generates test clips with Microsoft's Edge TTS service. `bench latency` pairs a device named "Bench satellite" (`hermes housemate revoke housemate-bench` removes it). |
 | Telemetry | None. No analytics, no update checks, nothing sent home. |
 

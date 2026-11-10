@@ -52,14 +52,14 @@ Twenty seconds after step 3, the **Kitchen** window rings: a chime, "Your tea ti
 
 Run `mkdir ~/housemate-demo` (on Windows, `mkdir %USERPROFILE%\housemate-demo`), then in the Kitchen: "Delete the housemate-demo folder in my home directory."
 
-**Look for:** with Hermes's command approvals on, the Kitchen window shows a card with the exact command and Approve / Deny, and reads the question out loud. Answer after the question ends (no talk button needed for the answer):
+**Look for:** with Hermes's command approvals on, the Kitchen window shows a card with the whole command, exactly as Hermes will run it (a long one scrolls inside the card), and Approve / Deny, and reads the question out loud. Answer after the question ends (no talk button needed for the answer):
 
 - Say **"deny"**: Hermes reports it was denied and the folder is still there.
 - Ask again (hold to talk) and say **"yes, but what does it do?"**: that is not a clean answer, so you are asked again.
 - Say **"approve"**: the folder is gone.
 - Say nothing: Hermes's approval timeout denies it.
 
-The spoken answer goes through a side chat, Hermes's own STT and the plugin's `pre_llm_call` hook, which resolves that card by its request id with `resolve_gateway_approval_card` ([adapter.py](adapter.py), [core/answers.py](core/answers.py), [core/intents.py](core/intents.py); tests in [tests/test_approvals.py](tests/test_approvals.py), [tests/test_answers.py](tests/test_answers.py), [tests/test_intents.py](tests/test_intents.py)).
+The spoken answer goes through a side chat, Hermes's own STT and the plugin's `pre_llm_call` hook, which resolves that card by its request id with `resolve_gateway_approval_card`, naming the device that answered ([adapter.py](adapter.py), [core/answers.py](core/answers.py), [core/intents.py](core/intents.py); tests in [tests/test_approvals.py](tests/test_approvals.py), [tests/test_answers.py](tests/test_answers.py), [tests/test_intents.py](tests/test_intents.py)).
 
 ## 6. Intercom
 
@@ -82,7 +82,7 @@ hermes housemate bench wake --max-hours 0.5 --no-generate --out ./bench-out
 
 ## 8. Tests and validation
 
-The tests are in [tests/](tests/): <!-- num:tests_passed -->547<!-- /num --> pass against the real Hermes <!-- num:hermes_version -->0.23.0<!-- /num --> ([results/tests.json](results/tests.json)). From a checkout:
+The tests are in [tests/](tests/): <!-- num:tests_passed -->566<!-- /num --> pass against the real Hermes <!-- num:hermes_version -->0.23.0<!-- /num --> ([results/tests.json](results/tests.json)). From a checkout:
 
 ```bash
 python -m pytest -m "not slow"
