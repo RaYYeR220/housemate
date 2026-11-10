@@ -61,7 +61,7 @@ Test machine for every VERIFIED-LIVE line: Windows 11, Ryzen 5 5600X, RTX 4060 8
 
 ## Not claimed
 
-- **No "Hey Hermes" wake word yet.** The default is openWakeWord's stock "Hey Jarvis".
+- **No "Hey Hermes" wake word.** The trained model missed our bar, so the default is openWakeWord's stock "Hey Jarvis".
 - **No voice recognition.** Housemate does not know who is speaking; anyone in earshot of a paired speaker can talk to the agent.
 - **"Nearest" is not a distance measurement.** It is the highest wake score, then the louder device.
 - **Latency is not a general figure.** It is one machine, short answers, a warm gateway and the setup recorded in `results/latency.json`. Long answers, cold starts, other hardware and other providers differ.
