@@ -102,7 +102,9 @@ canvas#obj{position:absolute;inset:0;width:100%;height:100%;display:block}
 #p-details{margin:10px 0 18px;font-size:17px;line-height:1.42;color:var(--c-ink-2);overflow-wrap:anywhere}
 #p-details:empty{margin-bottom:8px}
 #p-details span{display:block}
-#p-details code{font:15px/1.4 ui-monospace,Menlo,Consolas,monospace;color:var(--c-ink)}
+/* the command as it will run: never cut; a long one wraps and scrolls inside the card */
+#p-details pre{margin-top:8px;max-height:min(14em,30vh);overflow:auto;overscroll-behavior:contain;white-space:pre-wrap;overflow-wrap:anywhere;tab-size:4;padding:8px 10px;border:1px solid var(--c-hair);border-radius:12px;font:15px/1.4 ui-monospace,Menlo,Consolas,monospace;color:var(--c-ink)}
+#p-details pre:focus-visible{outline:2px solid var(--c-ink);outline-offset:2px}
 #p-btns{display:flex;flex-wrap:wrap;gap:12px}
 #p-btns button{flex:1 1 40%;min-height:88px;padding:8px 12px;border-radius:var(--r-btn);font-size:28px;font-weight:600;line-height:1.1;letter-spacing:-.015em;cursor:pointer;background:transparent;color:var(--c-ink);border:1px solid var(--c-ink)}
 #p-btns.many button{flex-basis:100%;min-height:60px;font-size:22px}
@@ -135,6 +137,7 @@ canvas#obj{position:absolute;inset:0;width:100%;height:100%;display:block}
   #p-details{margin:4px 0 10px;font-size:15px}
   #p-details span{display:inline}
   #p-details span+span::before{content:" · "}
+  #p-details pre{margin-top:4px;max-height:min(7em,24vh);font-size:13px}
   #p-btns button{min-height:72px;font-size:26px}
   #p-btns.many button{min-height:48px;font-size:18px}
   #p-foot{margin-top:8px;font-size:14px}
@@ -156,6 +159,7 @@ canvas#obj{position:absolute;inset:0;width:100%;height:100%;display:block}
   #p-title{font-size:34px}
   #p-details span{display:block}
   #p-details span+span::before{content:none}
+  #p-details pre{margin-top:8px;max-height:min(14em,30vh);font-size:15px}
   #p-btns button{min-height:80px}
   #c-body li,#c-body p{font-size:17px}
 }

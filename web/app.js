@@ -4,6 +4,7 @@
 import { Player } from './player.js';
 import { createFace, REDUCED } from './face.js';
 import * as ui from './ui.js';
+import { promptView } from './prompt.js';
 
 const Q = new URLSearchParams(location.search);
 const PERF = Q.get('perf') === '1';
@@ -319,28 +320,7 @@ function activePrompt() { let p = null; for (const v of prompts.values()) p = v;
 function showPrompt() {
   const p = activePrompt();
   if (!p) return;
-  let view;
-  if (p.kind === 'approval') {
-    const details = [];
-    if (p.detail) details.push({ text: cap1(String(p.detail)) });
-    if (p.command) details.push({ text: String(p.command).slice(0, 400), code: true });
-    if (!details.length) details.push({ text: String(p.text || '') });
-    view = {
-      title: p.title || 'Allow this?', details,
-      buttons: [{ label: 'Approve', value: 'approve', primary: true }, { label: 'Deny', value: 'deny' }],
-      foot: 'Say "approve" or "deny". No answer means deny.',
-    };
-  } else if (p.kind === 'resume') { // Hermes paused this conversation after a restart
-    view = {
-      title: p.title || 'Conversation paused', details: [{ text: String(p.detail || p.text || '') }],
-      buttons: [{ label: 'Continue', value: 'continue', primary: true }],
-      foot: 'Say "continue", or tap it.',
-    };
-  } else {
-    const choices = (Array.isArray(p.choices) ? p.choices : []).slice(0, 8).map((c) => ({ label: String(c), value: String(c) }));
-    view = { title: String(p.text || 'A question'), details: [], buttons: choices, foot: choices.length ? 'Say your choice, or tap it.' : 'Say your answer.' };
-  }
-  ui.renderPrompt(view, (value) => {
+  ui.renderPrompt(promptView(p), (value) => {
     if (!send({ type: 'ui.action', kind: 'prompt', id: p.id, value })) notice("Can't reach the hub", performance.now());
   });
 }

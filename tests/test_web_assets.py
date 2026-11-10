@@ -3,7 +3,9 @@ nothing fetched from outside the hub at runtime, inside the size budget, a valid
 
 import json
 import re
+import shutil
 import sqlite3
+import subprocess
 from pathlib import Path
 
 import aiohttp
@@ -16,9 +18,10 @@ from housemate.core.store import HousemateStore
 ROOT = Path(__file__).resolve().parents[1]
 WEB = ROOT / "web"
 FONTS = WEB / "fonts"
+NODE = shutil.which("node")
 
 REQUIRED = [
-    "index.html", "app.js", "ui.js", "face.js", "player.js", "mic-worklet.js", "style.css",
+    "index.html", "app.js", "ui.js", "prompt.js", "face.js", "player.js", "mic-worklet.js", "style.css",
     "manifest.webmanifest", "icon.svg", "chime.wav", "fonts/archivo-expanded-500.woff2", "fonts/OFL.txt",
 ]
 TEXT_SUFFIXES = {".html", ".js", ".css", ".webmanifest", ".svg", ".json"}
@@ -141,3 +144,64 @@ async def test_hub_serves_every_file(hub):
                 assert resp.headers.get("X-Content-Type-Options") == "nosniff"
                 if rel:
                     assert body == (WEB / rel).read_bytes(), rel
+
+
+# --- the approval card shows the command as it will run (catalog review of 73df1a6) ------------------
+
+
+def _prompt_view(msg: dict) -> dict:
+    """``promptView(msg)`` from web/prompt.js, run by node exactly as the page runs it."""
+    script = (
+        f"import {{ promptView }} from {json.dumps((WEB / 'prompt.js').as_uri())};"
+        "let s = ''; process.stdin.setEncoding('utf8');"
+        "process.stdin.on('data', (d) => { s += d; });"
+        "process.stdin.on('end', () => { process.stdout.write(JSON.stringify(promptView(JSON.parse(s)))); });"
+    )
+    out = subprocess.run([NODE, "--input-type=module", "-e", script], input=json.dumps(msg),
+                         capture_output=True, text=True, encoding="utf-8", check=True, timeout=60)
+    return json.loads(out.stdout)
+
+
+def _long_command() -> str:
+    cmd = 'for f in *.log; do\n\tgzip  -9   "$f"    # keep   the   spacing\ndone\n'
+    while len(cmd) < 2460:
+        cmd += "echo   'step'\t&&  true\n"
+    return cmd + "\n  rm -rf  ~/    # the dangerous tail\n"
+
+
+def _approval(command: str, choices: list) -> dict:
+    return {"type": "prompt", "kind": "approval", "id": "req-1", "text": "I need your OK to run a command.",
+            "choices": choices, "title": "Run a command?", "detail": "recursive delete", "command": command}
+
+
+@pytest.mark.skipif(NODE is None, reason="needs node to run the satellite's card code")
+def test_approval_card_shows_the_command_verbatim():
+    cmd = _long_command()
+    view = _prompt_view(_approval(cmd, ["Approve", "Deny"]))
+    assert [d["text"] for d in view["details"] if d.get("code")] == [cmd]  # whole, spacing kept
+    assert [b["value"] for b in view["buttons"]] == ["approve", "deny"]
+
+
+@pytest.mark.skipif(NODE is None, reason="needs node to run the satellite's card code")
+def test_deny_only_card_has_no_approve_button():
+    view = _prompt_view(_approval("rm -rf ~/", ["Deny"]))
+    assert [b["value"] for b in view["buttons"]] == ["deny"]
+    assert '"approve"' not in view["foot"]
+
+
+def test_card_code_never_cuts_or_respaces_the_command():
+    """Static guard for the page as shipped: the command goes from the hub's message to the card
+    with no slice, trim, split or replace, rendered as text in a wrapping, scrolling block."""
+    banned = re.compile(r"\.(?:slice|substring|substr|trim\w*|split|replace\w*|padEnd|padStart)\(")
+    app = (WEB / "app.js").read_text(encoding="utf-8")
+    assert "p.command" not in app and "promptView" in app  # the card's content is built in prompt.js
+    for line in (WEB / "prompt.js").read_text(encoding="utf-8").splitlines():
+        if "command" in line and not line.lstrip().startswith("//"):
+            assert not banned.search(line), line
+    ui = (WEB / "ui.js").read_text(encoding="utf-8")
+    block = re.search(r"if \(d\.code\) \{(.*?)\}", ui, re.S).group(1)
+    assert "createElement('pre')" in block and ".textContent = d.text" in block and "innerHTML" not in block
+    css = (WEB / "style.css").read_text(encoding="utf-8")
+    rule = re.search(r"#p-details pre\{([^}]*)\}", css).group(1)
+    for decl in ("white-space:pre-wrap", "overflow:auto", "max-height:", "overflow-wrap:anywhere"):
+        assert decl in rule, decl

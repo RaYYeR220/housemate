@@ -109,8 +109,15 @@ export function renderPrompt(p, onPick) {
   el.pTitle.textContent = p.title;
   clear(el.pDetails);
   for (const d of p.details) {
+    if (d.code) { // the command as it will run: whole, as text, wrapped and scrolled inside the card
+      const pre = document.createElement('pre');
+      pre.textContent = d.text;
+      pre.tabIndex = 0; pre.setAttribute('aria-label', 'The command');
+      el.pDetails.appendChild(pre);
+      continue;
+    }
     const s = document.createElement('span');
-    if (d.code) { const code = document.createElement('code'); code.textContent = d.text; s.appendChild(code); } else s.textContent = d.text;
+    s.textContent = d.text;
     el.pDetails.appendChild(s);
   }
   clear(el.pBtns);
